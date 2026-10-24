@@ -154,6 +154,7 @@ input:focus { border-color: var(--muted); box-shadow: 0 0 0 4px var(--soft); out
 .detail { padding: 4px 14px 14px; display: grid; gap: 14px; animation: blur-in .45s var(--spring) both; }
 .media { display: grid; grid-template-columns: 180px 1fr; gap: 14px; align-items: start; }
 .media img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); }
+.missing { color: var(--bad); font-size: 12px; }
 img.noimg { color: transparent; background: var(--soft) url(icon.svg) center / 40% no-repeat; }
 .media audio { width: 100%; grid-column: 1; height: 32px; }
 .media p { margin: 0; }
