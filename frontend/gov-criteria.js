@@ -75,6 +75,22 @@ const CATEGORY = {
   },
 };
 
+// The agent's taxonomy can change (e.g. amherst-2026-10.2 says "damaged_road_surface", "roads_traffic").
+// Map names this file doesn't know to the nearest rule set by keyword; unknown stays "other".
+const CATEGORY_WORDS = [
+  ['sidewalk', /sidewalk|curb|ramp|walkway|crosswalk/],
+  ['pothole', /pothole|road|pavement|asphalt|street_surface/],
+  ['streetlight', /light|lamp|signal/],
+  ['trash', /trash|litter|dump|garbage|bin|waste|recycl/],
+  ['graffiti', /graffiti|vandal|tag/],
+];
+function ruleCategory(cat) {
+  if (!cat) return 'other';
+  if (CATEGORY[cat]) return cat;
+  const hit = CATEGORY_WORDS.find(([, re]) => re.test(cat));
+  return hit ? hit[0] : 'other';
+}
+
 function tierFor(score) {
   return TIERS.find((t) => score >= t.min);
 }
@@ -100,8 +116,9 @@ function budgetFor(category, score) {
 // Reports the AI marked invalid sink (x0.4); reports the AI has not seen yet count as 30.
 function assess(r, now = Date.now()) {
   const ai = r.ai;
-  const category = ai?.category || r.user.category || 'other';
-  const c = CATEGORY[category] || CATEGORY.other;
+  const category = ai?.category || r.user.category || 'other'; // shown to staff as the AI wrote it
+  const rules = ruleCategory(category);
+  const c = CATEGORY[rules];
   const severity = severityOf(r);
   const base = severity ?? 30;
   const open = !DONE.includes(r.gov.status);
@@ -126,7 +143,7 @@ function assess(r, now = Date.now()) {
     category,
     priority: { ...tier },
     suggested_department: ai?.department || null,
-    budget: budgetFor(category, base),
+    budget: budgetFor(rules, base),
     criteria: {
       serious: c.serious,
       target: c.target,
@@ -137,4 +154,4 @@ function assess(r, now = Date.now()) {
   };
 }
 
-module.exports = { DONE, TIERS, VALID_RULES, CATEGORY, assess, severityOf, budgetFor, tierFor };
+module.exports = { DONE, TIERS, VALID_RULES, CATEGORY, ruleCategory, assess, severityOf, budgetFor, tierFor };

@@ -143,7 +143,47 @@ the voice note, AI reasons or internal notes.
 
 ## Town staff dashboard
 
-`/gov.html` (or `/gov`), served by the same Node server. Staff sign in with a government ID and PIN, then see:
+`/gov.html` (or `/gov`), served by the same Node server as the report form. Staff sign in with a government ID and PIN.
+
+| Where | Staff dashboard URL | Reports from |
+|---|---|---|
+| Live, on the Pi (public) | **https://raspberrypi-1.tail4620bc.ts.net:10000/gov.html** | Supabase (real reports) |
+| Local, same machine | http://127.0.0.1:8610/gov.html | whatever `.env` / `DATA_DIR` points at |
+
+### Fake government IDs (to sign in)
+
+Demo accounts only, defined in `frontend/gov.js`. Use any of these IDs with its PIN.
+
+| Government ID | Name | Role | Default filter |
+|---|---|---|---|
+| `AMH-DPW-1001` | Dana Rivera | DPW Operations Supervisor | Public Works |
+| `AMH-DPW-1002` | Chris Okafor | DPW Highway Foreman | Public Works |
+| `AMH-PRK-2001` | Priya Shah | Parks & Recreation Coordinator | Parks & Recreation |
+| `AMH-HLT-3001` | Morgan Lee | Health Inspector | Health & Inspections |
+| `AMH-TMO-9001` | Alex Chen | Town Manager's Office | all departments |
+
+**PINs:** on the live Pi server, run `cat data/gov_users.json` (repo root) to see the PIN for each ID.
+They are not written here because the README is in git and the live dashboard is public.
+Locally, start the server with `GOV_DEMO_PIN=246810` and every ID uses `246810`.
+
+How it works: if `GOV_DEMO_PIN` is set, every account uses that PIN. Otherwise each account gets a
+random 6-digit PIN on first run, saved in `data/gov_users.json` (or `$DATA_DIR/gov_users.json`;
+mode 600, git-ignored). Sessions are HttpOnly, SameSite=Strict cookies that last 8 hours and are
+held in memory, so restarting the server signs everyone out. Logins are limited to 10 attempts
+per 10 minutes, both per client and per ID.
+
+The resident site is the same address without `/gov.html`. To check the live dashboard is up:
+
+```bash
+systemctl --user status hackachussetts-report                                        # service running
+curl -s https://raspberrypi-1.tail4620bc.ts.net:10000/api/gov/me                      # {"error":"login required"} = dashboard API is live
+```
+
+If `/gov.html` loads but sign-in fails with "Not found", the server was started before the dashboard code
+was added: `systemctl --user restart hackachussetts-report`. The live server has no `GOV_DEMO_PIN`, so its PINs
+are in `data/gov_users.json` on the Pi (`cat data/gov_users.json`). Actions there change the real Supabase rows.
+
+After signing in, staff see:
 
 - **List** of reports ranked by the AI, highest first. Each one shows the photo, priority (P1-P4),
   whether the AI found it valid, the status, and "Past target" when it's overdue.
@@ -156,24 +196,6 @@ the voice note, AI reasons or internal notes.
   If no department is assigned yet, In progress assigns the AI's suggested department.
 - **Filters:** Open / Closed / All, "Only my department" (on by default for department accounts), and search.
 - **Criteria** button: the full rules below.
-
-### Fake government IDs
-
-These are demo accounts only, defined in `frontend/gov.js`.
-
-| Government ID | Name | Role | Default filter |
-|---|---|---|---|
-| `AMH-DPW-1001` | Dana Rivera | DPW Operations Supervisor | Public Works |
-| `AMH-DPW-1002` | Chris Okafor | DPW Highway Foreman | Public Works |
-| `AMH-PRK-2001` | Priya Shah | Parks & Recreation Coordinator | Parks & Recreation |
-| `AMH-HLT-3001` | Morgan Lee | Health Inspector | Health & Inspections |
-| `AMH-TMO-9001` | Alex Chen | Town Manager's Office | all departments |
-
-**PINs:** if `GOV_DEMO_PIN` is set, every account uses that PIN. Otherwise each account gets a
-random 6-digit PIN on first run, saved in `data/gov_users.json` (or `$DATA_DIR/gov_users.json`;
-mode 600, git-ignored). Sessions are HttpOnly, SameSite=Strict cookies that last 8 hours and are
-held in memory, so restarting the server signs everyone out. Logins are limited to 10 attempts
-per 10 minutes, both per client and per ID.
 
 ### Run locally
 
@@ -391,3 +413,4 @@ sudo tailscale funnel --bg --https=10000 http://127.0.0.1:8610
 ```
 
 Public URL (works without Tailscale): https://raspberrypi-1.tail4620bc.ts.net:10000/ — QR code in `report-qr.png`.
+Staff dashboard: https://raspberrypi-1.tail4620bc.ts.net:10000/gov.html (see [Town staff dashboard](#town-staff-dashboard)).

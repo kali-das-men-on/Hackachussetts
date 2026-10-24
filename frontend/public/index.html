@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b5fff">
+  <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
   <title>Report an Issue</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
@@ -14,10 +15,12 @@
   <link rel="preconnect" href="https://photon.komoot.io" crossorigin>
 </head>
 <body>
-  <nav class="tabs" role="tablist">
-    <a href="#report" role="tab" id="tab-report" class="tab active" aria-selected="true">Report an issue</a>
-    <a href="#issues" role="tab" id="tab-issues" class="tab" aria-selected="false">Issues near me</a>
-  </nav>
+  <div class="topbar">
+    <nav class="tabs" role="tablist">
+      <a href="#report" role="tab" id="tab-report" class="tab active" aria-selected="true">Report</a>
+      <a href="#issues" role="tab" id="tab-issues" class="tab" aria-selected="false">Issues near me</a>
+    </nav>
+  </div>
 
   <div id="panel-report" role="tabpanel">
   <main id="form-view">
@@ -28,9 +31,13 @@
 
     <!-- 1. Photo -->
     <section class="card" id="photo-card">
-      <label class="big-btn" id="take-btn" for="photo-camera">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3 7.2 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9Zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg>
-        <span>Take photo</span>
+      <div class="card-label"><span class="num">1</span>Photo</div>
+      <label class="photo-tile" id="take-btn" for="photo-camera">
+        <span class="photo-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3 7.2 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9Zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg>
+        </span>
+        <span class="photo-title">Take photo</span>
+        <span class="photo-sub">Location is added automatically</span>
       </label>
       <input type="file" id="photo-camera" accept="image/*" capture="environment" hidden>
       <input type="file" id="photo-library" accept="image/*" hidden>
@@ -44,6 +51,7 @@
 
     <!-- 2. Location -->
     <section class="card" id="loc-card">
+      <div class="card-label"><span class="num">2</span>Location</div>
       <div class="row">
         <span class="dot" id="loc-dot"></span>
         <div class="grow">
@@ -77,12 +85,13 @@
 
     <!-- 3. Details -->
     <section class="card">
-      <textarea id="description" rows="3" maxlength="500" placeholder="What's wrong? Describe it, or record a voice note below. (optional)"></textarea>
+      <div class="card-label"><span class="num">3</span>Details <span class="opt">optional</span></div>
+      <textarea id="description" rows="3" maxlength="500" placeholder="What's wrong? Describe it, or record a voice note."></textarea>
 
       <div id="audio-box">
         <button type="button" class="chip-btn" id="rec-btn">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
-          <span>Record voice note (30 s max)</span>
+          <span>Record a voice note</span><span class="hint">30 s max</span>
         </button>
         <div id="rec-live" class="rec-row" hidden>
           <span class="dot bad"></span>
@@ -100,7 +109,7 @@
       </div>
 
       <input type="text" id="contact" inputmode="email" autocomplete="email" maxlength="254"
-             placeholder="Email or phone for updates (optional)">
+             placeholder="Email or phone for status updates">
       <div id="contact-err" class="err" hidden>Enter an email or a phone number.</div>
     </section>
 
@@ -114,7 +123,7 @@
 
   <main id="done-view" hidden>
     <div class="done">
-      <svg viewBox="0 0 24 24" class="check" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+      <div class="check-wrap"><svg viewBox="0 0 24 24" class="check" aria-hidden="true"><path d="M5 12.5 10 17.5 19.5 7"/></svg></div>
       <h1 id="done-title">Report sent</h1>
       <p id="done-ref" class="ref"></p>
       <p id="done-msg" class="muted"></p>
@@ -133,7 +142,7 @@
 
     <!-- My reports, by the email or phone given on the report -->
     <section class="card">
-      <b>Check my reports</b>
+      <div class="card-label">Check my reports</div>
       <form id="lookup-form" class="row lookup-row">
         <input type="text" id="lookup-contact" inputmode="email" autocomplete="email" maxlength="254"
                placeholder="Email or phone you used" aria-label="Email or phone you used on the report">
@@ -145,6 +154,7 @@
 
     <!-- Public board: never shows anyone's contact details -->
     <section class="card">
+      <div class="card-label">Public board</div>
       <div class="seg" role="group" aria-label="Sort">
         <button type="button" class="seg-btn active" data-mode="nearby">Nearby</button>
         <button type="button" class="seg-btn" data-mode="recent">Recent</button>

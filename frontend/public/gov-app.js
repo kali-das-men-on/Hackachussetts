@@ -143,7 +143,12 @@ function card(r, i) {
 }
 
 function cap(s) {
-  return s ? s[0].toUpperCase() + s.slice(1) : '';
+  return s ? (s[0].toUpperCase() + s.slice(1)).replace(/_/g, ' ') : '';
+}
+
+// Known departments get a label; new names from the agent (e.g. roads_traffic) are shown as written.
+function deptName(d) {
+  return d ? DEPT_LABEL[d] || cap(d) : null;
 }
 
 function coords(r) {
@@ -164,7 +169,7 @@ function detail(r) {
   return `<div class="detail">
     <div class="media">
       <a href="${esc(r.photo_src)}" target="_blank"><img src="${esc(r.photo_src)}" alt="Report photo"></a>
-      ${r.user.audio ? `<audio controls preload="none" src="/api/gov/media/${esc(r.user.audio.path)}"></audio>` : ''}
+      ${r.user.audio ? `<audio controls preload="metadata" src="/api/gov/media/${esc(r.user.audio.path)}"></audio>` : ''}
       <p><b>${esc(r.id)}</b> · ${esc(fmtDate(r.created_at))}<br>
       ${esc(r.user.description || 'No description')}<br>
       <small class="muted">${esc(r.user.location.address || '')} ${r.user.location.lat != null ? `· <a target="_blank" href="https://www.openstreetmap.org/?mlat=${r.user.location.lat}&mlon=${r.user.location.lng}#map=18/${r.user.location.lat}/${r.user.location.lng}">map</a>` : ''}</small><br>
@@ -187,7 +192,7 @@ function detail(r) {
       </div>
       <div class="box">
         <h3>AI suggestion</h3>
-        <p><b>Department:</b> ${esc(DEPT_LABEL[a.suggested_department] || 'none yet')}${g.department && g.department !== a.suggested_department ? ` <small>(assigned: ${esc(DEPT_LABEL[g.department])})</small>` : ''}</p>
+        <p><b>Department:</b> ${esc(deptName(a.suggested_department) || 'none yet')}${g.department && g.department !== a.suggested_department ? ` <small>(assigned: ${esc(deptName(g.department))})</small>` : ''}</p>
         ${ai ? `<p class="reason">${esc(ai.department_reason)}</p>` : ''}
         <p><b>Budget estimate:</b> ${esc(a.budget.text)} <small class="muted">(${esc(a.budget.basis)}; rough planning range, not a quote)</small></p>
         <p class="muted"><small>Rank ${a.rank}: ${esc(a.rank_reason)}</small></p>
@@ -264,9 +269,16 @@ async function doAction(btn) {
   }
 }
 
-// Photo missing from storage: show an empty tile instead of a broken-image icon.
+// File missing from storage: say so instead of a broken image or a silent player.
 $('#list').addEventListener('error', (e) => {
-  if (e.target.tagName === 'IMG') e.target.classList.add('noimg');
+  const el = e.target;
+  if (el.tagName === 'IMG') {
+    el.classList.add('noimg');
+    el.title = 'Photo file is missing from storage';
+    if (el.closest('.media')) el.closest('a').insertAdjacentHTML('afterend', '<small class="missing">Photo file is missing from storage.</small>');
+  } else if (el.tagName === 'AUDIO') {
+    el.outerHTML = '<small class="missing">Voice note file is missing from storage.</small>';
+  }
 }, true);
 
 // ---------- map ----------

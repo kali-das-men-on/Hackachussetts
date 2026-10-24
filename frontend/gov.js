@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { assess, DONE, TIERS, VALID_RULES, CATEGORY } = require('./gov-criteria');
+const { DEPARTMENTS } = require('./report-shape');
 
 // Fake accounts. department null = sees and acts on every department.
 const GOV_USERS = [
@@ -157,7 +158,11 @@ function createGov(deps) {
     const changes = { status, updated_by: user.id };
     if (note) changes.note = note;
     // Taking the job: record the department doing it (the AI's suggestion unless staff set one).
-    if (status === 'in_progress' && !r.gov.department) changes.department = r.ai?.department || user.department || 'other';
+    // Only the six departments in schema/report.schema.json are allowed in gov.department.
+    if (status === 'in_progress' && !r.gov.department) {
+      const ai = DEPARTMENTS.includes(r.ai?.department) ? r.ai.department : null;
+      changes.department = ai || user.department || 'other';
+    }
     const updated = await store.updateGov(id, changes);
     console.log(`gov ${user.id} ${id} -> ${status}`);
     send(res, 200, { report: forStaff(updated, Date.now()) });
