@@ -159,6 +159,8 @@ def ready():
                 ADD COLUMN IF NOT EXISTS ip_hash      text,
                 ADD COLUMN IF NOT EXISTS photo_sha256 text,
                 ADD COLUMN IF NOT EXISTS problem_id   text,
+                ADD COLUMN IF NOT EXISTS photo_dhash  text,
+                ADD COLUMN IF NOT EXISTS merge_reason text,
                 ADD COLUMN IF NOT EXISTS counted      boolean NOT NULL DEFAULT false"""
         )
         c.execute("CREATE INDEX IF NOT EXISTS civic_reports_problem ON civic_reports (problem_id)")
@@ -324,7 +326,10 @@ def analyze_report(report_id: str, **inputs):
     try:
         ai = agent.run_agent(**inputs)
         with db() as c:
-            c.execute("UPDATE civic_reports SET ai = %s WHERE id = %s", (Jsonb(ai), report_id))
+            c.execute(
+                "UPDATE civic_reports SET ai = %s, photo_dhash = %s WHERE id = %s",
+                (Jsonb(ai), problems.photo_dhash(inputs["photo_bytes"]), report_id),
+            )
     except Exception as e:
         print(f"Agent failed for {report_id}: {e}")
         return

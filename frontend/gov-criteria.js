@@ -99,9 +99,10 @@ function money(n) {
   return '$' + n.toLocaleString('en-US');
 }
 
-// The score staff see: their own override, else the AI's. null if neither exists.
+// The score staff see: their own override, else the merged problem's (highest AI score plus a
+// bonus for separate reporters), else the AI's. null if none exists.
 function severityOf(r) {
-  const s = r.gov.severity_score ?? r.ai?.severity_score;
+  const s = r.gov.severity_score ?? r.problem?.severity_score ?? r.ai?.severity_score;
   return s == null || s === '' ? null : Number(s);
 }
 
@@ -131,6 +132,7 @@ function assess(r, now = Date.now()) {
   rank = Math.round(rank * 10) / 10;
 
   const why = [severity == null ? 'not analyzed yet (counted as 30)' : `severity ${severity}`];
+  if (r.problem?.report_count > 1 && r.gov.severity_score == null) why[0] += ` (${r.problem.severity_note})`;
   const days = Math.floor(ageH / 24);
   if (ageBonus >= 1) why.push(`+${Math.round(ageBonus)} for ${days} day${days === 1 ? '' : 's'} open`);
   if (overdue) why.push('+10 past target');

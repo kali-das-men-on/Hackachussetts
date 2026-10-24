@@ -62,6 +62,40 @@ ALTER TABLE civic_reports
 
 ALTER TABLE civic_reports ENABLE ROW LEVEL SECURITY;
 
+-- ---------- merged problems (backend/problems.py) ----------
+-- Several reports of the same real-world issue share one problem_id. Staff see one issue per
+-- problem, and an action on it applies to every report in it.
+ALTER TABLE civic_reports
+    ADD COLUMN IF NOT EXISTS ip_hash      text,
+    ADD COLUMN IF NOT EXISTS photo_sha256 text,
+    ADD COLUMN IF NOT EXISTS photo_dhash  text,
+    ADD COLUMN IF NOT EXISTS problem_id   text,
+    ADD COLUMN IF NOT EXISTS merge_reason text,
+    ADD COLUMN IF NOT EXISTS counted      boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS civic_reports_problem ON civic_reports (problem_id);
+
+CREATE SEQUENCE IF NOT EXISTS civic_problem_seq START 1001;  -- P-1001, P-1002, ...
+CREATE TABLE IF NOT EXISTS civic_problems (
+    id               text PRIMARY KEY,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    last_reported_at timestamptz NOT NULL DEFAULT now(),
+    status           text NOT NULL DEFAULT 'open',
+    category         text NOT NULL,
+    department       text,
+    lat              double precision,
+    lng              double precision,
+    address          text,
+    summary          text,
+    first_report_id  text,
+    top_report_id    text,
+    report_count     integer NOT NULL DEFAULT 1,
+    reporter_count   integer NOT NULL DEFAULT 1,
+    base_severity    integer NOT NULL DEFAULT 0,
+    severity_score   integer NOT NULL DEFAULT 0,
+    severity_note    text
+);
+CREATE INDEX IF NOT EXISTS civic_problems_open ON civic_problems (status, category);
+ALTER TABLE civic_problems ENABLE ROW LEVEL SECURITY;
 DO $$ BEGIN
   ALTER TABLE civic_reports ADD CONSTRAINT civic_reports_gov_status_check
     CHECK (gov_status IN ('received','in_review','assigned','in_progress','resolved','rejected'));
@@ -132,6 +166,14 @@ LANGUAGE sql STABLE AS $$
                                  'was_queued_offline', r.was_queued_offline)),
     'ai', CASE WHEN r.ai IS NULL THEN NULL
                ELSE r.ai || jsonb_build_object('severity_score', r.ai->>'severity_score') END,
+    -- The merged issue this report belongs to (null if not merged: unanalyzed or AI says invalid).
+    'problem', (SELECT jsonb_build_object(
+                  'id', p.id, 'status', p.status, 'category', p.category,
+                  'severity_score', p.severity_score::text, 'severity_note', p.severity_note,
+                  'report_count', p.report_count, 'reporter_count', p.reporter_count,
+                  'first_report_id', p.first_report_id, 'is_first_report', p.first_report_id = r.id,
+                  'counted', r.counted, 'merge_reason', r.merge_reason)
+                FROM civic_problems p WHERE p.id = r.problem_id),
     'gov', jsonb_build_object(
       'status', r.gov_status,
       'department', r.gov_department,
@@ -157,6 +199,7 @@ RETURNS jsonb LANGUAGE sql STABLE AS $$
     'description', r.description,
     'location', jsonb_build_object('lat', r.lat, 'lng', r.lng, 'address', r.address),
     'photo_url', '/api/issues/' || r.id || '/photo',
+    'report_count', coalesce((SELECT p.report_count FROM civic_problems p WHERE p.id = r.problem_id), 1),
     'distance_km', round(distance_km::numeric, 2));
 $$;
 
@@ -172,19 +215,25 @@ $$;
 
 -- GET /api/issues. status_filter: 'all' | 'open' | 'closed' | one status.
 -- With lat/lng: within radius_km, nearest first. Without: newest first.
+-- One row per issue: reports merged into the same problem show once, as the problem's first
+-- report, with report_count telling how many people reported it.
 CREATE OR REPLACE FUNCTION public_issues(lat double precision DEFAULT NULL, lng double precision DEFAULT NULL,
                                          radius_km double precision DEFAULT 5, status_filter text DEFAULT 'all',
                                          max_rows integer DEFAULT 50)
 RETURNS SETOF jsonb LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-  WITH f AS (
-    SELECT r, CASE WHEN public_issues.lat IS NOT NULL AND public_issues.lng IS NOT NULL AND r.lat IS NOT NULL
-                   THEN civic_distance_km(public_issues.lat, public_issues.lng, r.lat, r.lng) END AS d
+  WITH one AS (
+    SELECT DISTINCT ON (coalesce(r.problem_id, r.id)) r
       FROM civic_reports r
+     ORDER BY coalesce(r.problem_id, r.id), r.created_at, r.id
+  ), f AS (
+    SELECT one.r, CASE WHEN public_issues.lat IS NOT NULL AND public_issues.lng IS NOT NULL AND (one.r).lat IS NOT NULL
+                   THEN civic_distance_km(public_issues.lat, public_issues.lng, (one.r).lat, (one.r).lng) END AS d
+      FROM one
      WHERE CASE status_filter
              WHEN 'all' THEN true
-             WHEN 'open' THEN r.gov_status NOT IN ('resolved','rejected')
-             WHEN 'closed' THEN r.gov_status IN ('resolved','rejected')
-             ELSE r.gov_status = status_filter END
+             WHEN 'open' THEN (one.r).gov_status NOT IN ('resolved','rejected')
+             WHEN 'closed' THEN (one.r).gov_status IN ('resolved','rejected')
+             ELSE (one.r).gov_status = status_filter END
   )
   SELECT civic_public_json(f.r, f.d) FROM f
    WHERE public_issues.lat IS NULL OR public_issues.lng IS NULL OR f.d <= radius_km
@@ -238,6 +287,13 @@ BEGIN
     gov_updated_at     = now()
   WHERE id = report_id
   RETURNING * INTO r;
+  -- Keep the merged problem's open/closed flag in step, so closed issues stop collecting new reports.
+  IF r.problem_id IS NOT NULL THEN
+    UPDATE civic_problems p SET status = CASE WHEN EXISTS (
+        SELECT 1 FROM civic_reports x WHERE x.problem_id = p.id AND x.gov_status NOT IN ('resolved','rejected'))
+      THEN 'open' ELSE 'closed' END
+    WHERE p.id = r.problem_id;
+  END IF;
   RETURN civic_report_json(r);
 END $$;
 
@@ -288,3 +344,7 @@ COMMENT ON FUNCTION civic_report_json(civic_reports) IS 'Row -> full nested repo
 COMMENT ON FUNCTION public_issues(double precision, double precision, double precision, text, integer) IS 'Public issues board: public fields only, nearest first when lat/lng are given.';
 COMMENT ON FUNCTION lookup_issues(text) IS 'Reports filed with this email or phone, public fields only.';
 COMMENT ON FUNCTION set_report_gov(text, jsonb) IS 'Staff update of gov fields: {status, note, department, severity_score, internal_notes, updated_by}.';
+COMMENT ON TABLE civic_problems IS 'One real-world issue; several reports of it share civic_reports.problem_id. Filled by backend/problems.py.';
+COMMENT ON COLUMN civic_reports.problem_id IS 'civic_problems.id this report was merged into. NULL until the AI has run, or if the AI says the report is not valid.';
+COMMENT ON COLUMN civic_reports.merge_reason IS 'Why it joined an existing problem (same photo / nearby same kind / AI photo match). NULL for the first report of a problem.';
+COMMENT ON COLUMN civic_reports.photo_dhash IS 'Perceptual hash of the photo (16 hex), finds re-saved copies of the same photo.';
