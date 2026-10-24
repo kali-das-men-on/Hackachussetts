@@ -1,35 +1,44 @@
-"""Simple FastAPI backend for the report-an-issue frontend.
+"""FastAPI backend for the report-an-issue frontend.
 
-- Receives reports (photo, optional voice note, address, description, contact).
-- Saves report rows in Supabase Postgres (DATABASE_URL) and the photo / audio
-  files in a private Supabase Storage bucket (SUPABASE_SECRET_KEY).
-- Uses ChatGPT via OpenRouter + LangChain to fill in each report's category and
-  a one-line summary from its description, and to power POST /api/chat.
-- Serves the frontend from ../frontend/public so the browser's relative
-  fetch('/api/reports') hits this server.
+- POST /api/reports receives a report (photo, optional voice note, location,
+  description, contact) and saves it: the row in Supabase Postgres
+  (DATABASE_URL) and the photo / audio in a private Supabase Storage bucket
+  (SUPABASE_SECRET_KEY).
+- After responding, agent.py analyzes the report (validity, category,
+  department, severity 0-100) and the result is saved in the row's `ai` column.
+- GET routes return reports in the shared schema: id, client_report_id,
+  created_at, user{...}, ai{...}, gov{...}.
+- Serves the frontend from ../frontend/public (same origin as the API).
 
 Run:  cd backend && uvicorn main:app --port 8610
 """
 import os
 import re
+import sys
 import threading
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 import psycopg
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # so `import agent` works however uvicorn is started
 load_dotenv(HERE.parent / ".env")
 load_dotenv(HERE / ".env")
+
+import agent  # noqa: E402  (needs .env loaded first)
+from prompts import CATEGORIES  # noqa: E402
 
 # --- config (all from .env) ---
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -52,9 +61,10 @@ SUPABASE_KEY = (
 )
 BUCKET = os.getenv("SUPABASE_BUCKET", "civic-reports")
 
-CATEGORIES = ["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other"]
 MAX_PHOTO = 8 * 1024 * 1024
 MAX_AUDIO = 3 * 1024 * 1024
+# The shared schema example writes severity_score as a string ("64"). Set to False for a JSON number.
+SCORE_AS_STRING = True
 
 app = FastAPI(title="Report API")
 
@@ -79,7 +89,7 @@ _db_ready = False
 
 
 def ready():
-    """Create the table on first use. RLS is on so the public REST API can't read it."""
+    """Create / upgrade the table on first use. RLS is on so Supabase's public REST API can't read it."""
     global _db_ready
     if _db_ready:
         return
@@ -104,25 +114,94 @@ def ready():
                 audio_bytes   integer
             )"""
         )
+        # Columns added for the nested user / ai / gov schema (safe to re-run).
+        c.execute(
+            """ALTER TABLE civic_reports
+                ADD COLUMN IF NOT EXISTS client_report_id   text,
+                ADD COLUMN IF NOT EXISTS submitted_at       timestamptz,
+                ADD COLUMN IF NOT EXISTS lat                double precision,
+                ADD COLUMN IF NOT EXISTS lng                double precision,
+                ADD COLUMN IF NOT EXISTS accuracy_m         double precision,
+                ADD COLUMN IF NOT EXISTS location_source   text,
+                ADD COLUMN IF NOT EXISTS device_id          text,
+                ADD COLUMN IF NOT EXISTS user_agent         text,
+                ADD COLUMN IF NOT EXISTS was_queued_offline boolean NOT NULL DEFAULT false,
+                ADD COLUMN IF NOT EXISTS audio_duration_s   double precision,
+                ADD COLUMN IF NOT EXISTS ai                 jsonb,
+                ADD COLUMN IF NOT EXISTS gov_status         text NOT NULL DEFAULT 'received',
+                ADD COLUMN IF NOT EXISTS gov_department     text,
+                ADD COLUMN IF NOT EXISTS gov_severity_score integer,
+                ADD COLUMN IF NOT EXISTS gov_feedback       text,
+                ADD COLUMN IF NOT EXISTS gov_internal_notes text,
+                ADD COLUMN IF NOT EXISTS gov_updated_by     text,
+                ADD COLUMN IF NOT EXISTS gov_updated_at     timestamptz"""
+        )
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS civic_reports_client_id ON civic_reports (client_report_id)"
+        )
         c.execute("ALTER TABLE civic_reports ENABLE ROW LEVEL SECURITY")
     _db_ready = True
 
 
+def iso(dt):
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def score(v):
+    if v is None:
+        return None
+    return str(int(v)) if SCORE_AS_STRING else int(v)
+
+
 def to_json(r: dict) -> dict:
+    """One database row -> the shared report schema."""
+    ai = None
+    if r["ai"]:
+        ai = {**r["ai"], "severity_score": score(r["ai"].get("severity_score"))}
     return {
         "id": r["id"],
-        "created_at": r["created_at"].isoformat(),
-        "status": r["status"],
-        "address": r["address"],
-        "description": r["description"],
-        "category": r["category"],
-        "ai_summary": r["ai_summary"],
-        "contact": {"email": r["contact_email"], "phone": r["contact_phone"]},
-        "photo": {"path": r["photo_path"], "mime": r["photo_mime"], "bytes": r["photo_bytes"]},
-        "audio": (
-            {"path": r["audio_path"], "mime": r["audio_mime"], "bytes": r["audio_bytes"]}
-            if r["audio_path"] else None
-        ),
+        "client_report_id": r["client_report_id"],
+        "created_at": iso(r["created_at"]),
+        "user": {
+            "submitted_at": iso(r["submitted_at"]),
+            "photo": {"path": r["photo_path"], "mime": r["photo_mime"], "bytes": r["photo_bytes"]},
+            "audio": (
+                {
+                    "path": r["audio_path"],
+                    "mime": r["audio_mime"],
+                    "bytes": r["audio_bytes"],
+                    "duration_s": r["audio_duration_s"],
+                }
+                if r["audio_path"] else None
+            ),
+            "description": r["description"],
+            "category": r["category"],
+            "location": {
+                "lat": r["lat"],
+                "lng": r["lng"],
+                "accuracy_m": r["accuracy_m"],
+                "source": r["location_source"],
+                "address": r["address"],
+            },
+            "contact": {"email": r["contact_email"], "phone": r["contact_phone"]},
+            "meta": {
+                "device_id": r["device_id"],
+                "user_agent": r["user_agent"],
+                "was_queued_offline": r["was_queued_offline"],
+            },
+        },
+        "ai": ai,  # null until the agent has finished (a few seconds after submit)
+        "gov": {
+            "status": r["gov_status"],
+            "department": r["gov_department"],
+            "severity_score": score(r["gov_severity_score"]),
+            "feedback": r["gov_feedback"],
+            "internal_notes": r["gov_internal_notes"],
+            "updated_by": r["gov_updated_by"],
+            "updated_at": iso(r["gov_updated_at"]),
+        },
     }
 
 
@@ -176,7 +255,17 @@ def storage_delete(path: str):
         pass  # best effort cleanup
 
 
-# ---------- AI (LangChain + OpenRouter) ----------
+# ---------- AI ----------
+def analyze_report(report_id: str, **inputs):
+    """Background task: run the agent and save its result in the row's `ai` column."""
+    try:
+        ai = agent.run_agent(**inputs)
+        with db() as c:
+            c.execute("UPDATE civic_reports SET ai = %s WHERE id = %s", (Jsonb(ai), report_id))
+    except Exception as e:
+        print(f"Agent failed for {report_id}: {e}")
+
+
 def ask_ai(system: str, messages: list) -> str:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_openrouter import ChatOpenRouter
@@ -186,33 +275,6 @@ def ask_ai(system: str, messages: list) -> str:
     for role, text in messages:
         msgs.append(AIMessage(content=text) if role == "assistant" else HumanMessage(content=text))
     return llm.invoke(msgs).content.strip()
-
-
-def analyze_report(report_id: str, description: str):
-    """Background task: fill in category + one-line summary from the description."""
-    if not description or not OPENROUTER_KEY:
-        return
-    try:
-        text = ask_ai(
-            "You triage city issue reports. Reply with exactly two lines:\n"
-            f"category: <one of {', '.join(CATEGORIES)}>\n"
-            "summary: <one short sentence for city staff>",
-            [("user", description)],
-        )
-        category = summary = None
-        for line in text.splitlines():
-            key, _, value = line.partition(":")
-            if key.strip().lower() == "category" and value.strip().lower() in CATEGORIES:
-                category = value.strip().lower()
-            elif key.strip().lower() == "summary":
-                summary = value.strip()[:300]
-        with db() as c:
-            c.execute(
-                "UPDATE civic_reports SET category = %s, ai_summary = %s WHERE id = %s",
-                (category, summary, report_id),
-            )
-    except Exception as e:
-        print("AI analysis failed:", e)
 
 
 class ChatIn(BaseModel):
@@ -236,7 +298,7 @@ def chat(body: ChatIn):
     return {"reply": reply}
 
 
-# ---------- Reports (matches the frontend's POST /api/reports) ----------
+# ---------- Reports ----------
 def sniff_image(b: bytes):
     if b[:3] == b"\xff\xd8\xff":
         return "image/jpeg", "jpg"
@@ -259,9 +321,32 @@ def sniff_audio(b: bytes):
         return "audio/mpeg", "mp3"
 
 
-def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, address, description, email, phone) -> str:
-    """Upload the files to Storage and insert the row. Blocking, so it runs in a thread."""
+def num(v, lo, hi):
+    try:
+        n = float(v)
+        return n if lo <= n <= hi else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_time(v):
+    try:
+        return datetime.fromisoformat(v.strip().replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+
+
+def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, f: dict):
+    """Upload the files and insert the row. Blocking, so it runs in a thread.
+    Returns (report_id, is_duplicate)."""
     ready()
+    cid = f["client_report_id"]
+    if cid:  # the same report sent again (retry / offline queue)
+        with db() as c:
+            row = c.execute("SELECT id FROM civic_reports WHERE client_report_id = %s", (cid,)).fetchone()
+        if row:
+            return row["id"], True
+
     ensure_bucket()
     with db() as c:
         n = c.execute("SELECT nextval('civic_report_seq') AS n").fetchone()["n"]
@@ -269,44 +354,70 @@ def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, address, desc
 
     uploaded = []
     try:
-        photo_path = f"{rid}/photo.{photo_kind[1]}"
+        photo_path = f"photos/{rid}.{photo_kind[1]}"
         storage_upload(photo_path, photo_bytes, photo_kind[0])
         uploaded.append(photo_path)
         audio_path = None
         if audio_kind:
-            audio_path = f"{rid}/audio.{audio_kind[1]}"
+            audio_path = f"audio/{rid}.{audio_kind[1]}"
             storage_upload(audio_path, audio_bytes, audio_kind[0])
             uploaded.append(audio_path)
 
         with db() as c:
             c.execute(
                 """INSERT INTO civic_reports
-                   (id, address, description, contact_email, contact_phone,
-                    photo_path, photo_mime, photo_bytes, audio_path, audio_mime, audio_bytes)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   (id, client_report_id, submitted_at, address, description, category,
+                    contact_email, contact_phone, lat, lng, accuracy_m, location_source,
+                    device_id, user_agent, was_queued_offline,
+                    photo_path, photo_mime, photo_bytes,
+                    audio_path, audio_mime, audio_bytes, audio_duration_s)
+                   VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s)""",
                 (
-                    rid, address, description, email, phone,
+                    rid, cid, f["submitted_at"], f["address"], f["description"], f["category"],
+                    f["email"], f["phone"], f["lat"], f["lng"], f["accuracy_m"], f["location_source"],
+                    f["device_id"], f["user_agent"], f["queued"],
                     photo_path, photo_kind[0], len(photo_bytes),
                     audio_path, audio_kind[0] if audio_kind else None,
-                    len(audio_bytes) if audio_kind else None,
+                    len(audio_bytes) if audio_kind else None, f["audio_duration_s"],
                 ),
             )
+    except psycopg.errors.UniqueViolation:
+        # Two copies of the same report arrived at once; keep the first one.
+        for p in uploaded:
+            storage_delete(p)
+        with db() as c:
+            row = c.execute("SELECT id FROM civic_reports WHERE client_report_id = %s", (cid,)).fetchone()
+        return row["id"], True
     except Exception:
         for p in uploaded:  # don't leave orphaned files behind
             storage_delete(p)
         raise
-    return rid
+    return rid, False
 
 
 @app.post("/api/reports")
 async def create_report(
+    request: Request,
     photo: UploadFile = File(None),
     audio: UploadFile = File(None),
+    audio_duration_s: str = Form(None),
+    client_report_id: str = Form(None),
+    lat: str = Form(None),
+    lng: str = Form(None),
+    accuracy_m: str = Form(None),
+    location_source: str = Form(None),
     address: str = Form(None),
     description: str = Form(None),
+    category: str = Form(None),
     contact: str = Form(None),
     contact_phone: str = Form(None),
+    submitted_at: str = Form(None),
+    device_id: str = Form(None),
+    queued: str = Form(None),
 ):
+    if request.query_params.get("fail") == "1":  # the frontend's retry-test hook
+        return JSONResponse({"error": "forced failure (?fail=1)"}, status_code=503)
+
     # Validate everything before saving anything.
     if photo is None:
         raise HTTPException(400, "photo required")
@@ -318,6 +429,7 @@ async def create_report(
         raise HTTPException(400, "photo must be JPEG, PNG or WebP")
 
     audio_bytes = audio_kind = None
+    seconds = None
     if audio is not None:
         audio_bytes = await audio.read()
         if audio_bytes:
@@ -326,9 +438,17 @@ async def create_report(
             audio_kind = sniff_audio(audio_bytes)
             if not audio_kind:
                 raise HTTPException(400, "audio must be WebM, MP4/M4A, Ogg, MP3 or WAV")
+            seconds = num(audio_duration_s, 0, 3600)
+            if seconds is not None and seconds > 31:  # the device measures it; allow 1 s of drift
+                raise HTTPException(400, "Audio is longer than 30 seconds")
+            seconds = None if seconds is None else round(min(seconds, 30), 1)
 
+    la, ln = num(lat, -90, 90), num(lng, -180, 180)
+    has_point = la is not None and ln is not None
     address = (address or "").strip()[:300] or None
-    description = (description or "").strip()[:500] or None
+    if not has_point and not address:
+        raise HTTPException(400, "location or address required")
+    source = location_source if location_source in ("gps", "map", "address") else ("gps" if has_point else "address")
 
     # `contact` may hold an email or a phone number; `contact_phone` is a phone.
     contact = (contact or "").strip()
@@ -345,16 +465,52 @@ async def create_report(
     if phone is not None and not re.fullmatch(r"\+?\d{7,15}", phone):
         raise HTTPException(400, "Contact must be an email or phone number")
 
+    category = (category or "").strip() or None
+    if category and category not in CATEGORIES:
+        category = "other"
+    description = (description or "").strip()[:500] or None
+
+    fields = {
+        "client_report_id": (client_report_id or "").strip()[:64] or None,
+        "submitted_at": parse_time(submitted_at),
+        "address": address,
+        "description": description,
+        "category": category,
+        "email": email,
+        "phone": phone,
+        "lat": la if has_point else None,
+        "lng": ln if has_point else None,
+        "accuracy_m": num(accuracy_m, 0, 1e6) if has_point else None,
+        "location_source": source,
+        "device_id": (device_id or "").strip()[:64] or None,
+        "user_agent": (request.headers.get("user-agent") or "")[:300] or None,
+        "queued": queued == "1",
+        "audio_duration_s": seconds,
+    }
+
     try:
-        report_id = await run_in_threadpool(
-            store_report, photo_bytes, photo_kind, audio_bytes, audio_kind, address, description, email, phone
+        report_id, duplicate = await run_in_threadpool(
+            store_report, photo_bytes, photo_kind, audio_bytes, audio_kind, fields
         )
     except Exception:
         traceback.print_exc()  # full detail in the server console
         raise HTTPException(502, "Could not save the report. Please try again.")
 
-    # Run the AI analysis without making the user wait for it.
-    threading.Thread(target=analyze_report, args=(report_id, description), daemon=True).start()
+    if duplicate:
+        return JSONResponse({"id": report_id, "status": "received", "duplicate": True}, status_code=200)
+
+    # Analyze in the background so the resident doesn't wait for the model.
+    threading.Thread(
+        target=analyze_report,
+        args=(report_id,),
+        kwargs=dict(
+            photo_bytes=photo_bytes, photo_mime=photo_kind[0], description=description,
+            audio=audio_bytes if audio_kind else None, audio_format=audio_kind[1] if audio_kind else None,
+            lat=fields["lat"], lng=fields["lng"], accuracy_m=fields["accuracy_m"],
+            location_source=source, address=address, category=category,
+        ),
+        daemon=True,
+    ).start()
     return JSONResponse({"id": report_id, "status": "received"}, status_code=201)
 
 
@@ -404,7 +560,12 @@ def healthz():
             n = c.execute("SELECT count(*) AS n FROM civic_reports").fetchone()["n"]
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"database: {type(e).__name__}"}, status_code=503)
-    return {"ok": True, "reports": n, "ai": bool(OPENROUTER_KEY), "storage": bool(SUPABASE_KEY) and not SUPABASE_KEY.startswith("sb_publishable_")}
+    return {
+        "ok": True,
+        "reports": n,
+        "ai": bool(OPENROUTER_KEY),
+        "storage": bool(SUPABASE_KEY) and not SUPABASE_KEY.startswith("sb_publishable_"),
+    }
 
 
 # Serve the frontend so it is same-origin with the API (mounted last).
