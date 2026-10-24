@@ -147,7 +147,8 @@ def ready():
                 ADD COLUMN IF NOT EXISTS gov_feedback       text,
                 ADD COLUMN IF NOT EXISTS gov_internal_notes text,
                 ADD COLUMN IF NOT EXISTS gov_updated_by     text,
-                ADD COLUMN IF NOT EXISTS gov_updated_at     timestamptz"""
+                ADD COLUMN IF NOT EXISTS gov_updated_at     timestamptz,
+                ADD COLUMN IF NOT EXISTS gov_status_history jsonb NOT NULL DEFAULT '[]'::jsonb"""
         )
         c.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS civic_reports_client_id ON civic_reports (client_report_id)"
@@ -262,6 +263,7 @@ def to_json(r: dict) -> dict:
             "internal_notes": r["gov_internal_notes"],
             "updated_by": r["gov_updated_by"],
             "updated_at": iso(r["gov_updated_at"]),
+            "status_history": r.get("gov_status_history") or [],
         },
     }
 
@@ -736,5 +738,8 @@ def healthz():
     }
 
 
-# Serve the frontend so it is same-origin with the API (mounted last).
+# Include compatibility routes before the static frontend mount.
+# Importing this module registers the router against the already-created app.
+import compat  # noqa: E402,F401
+
 app.mount("/", StaticFiles(directory=HERE.parent / "frontend" / "public", html=True), name="frontend")
