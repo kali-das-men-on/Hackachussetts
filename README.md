@@ -23,7 +23,17 @@ Node ≥ 22. The server reads the repo-root `.env`, the same file `backend/main.
 | no Postgres `DATABASE_URL` | local files in `data/` |
 
 `DATABASE_URL= node server.js` forces the local file store. `GET /healthz` shows which store is in use.
-The Node server does not run the AI agent; `ai` is filled in only for reports sent through `backend/main.py`.
+The Node server does not call the model itself. `backend/worker.py` (the AI worker) polls Supabase for
+reports with no `ai`, runs `backend/agent.py` on the photo, description and voice note, saves `ai` and
+merges the report into a problem, usually within 10-20 s of sending:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+cd backend && ../.venv/bin/python worker.py      # needs OPENROUTER_API_KEY in .env
+```
+
+On the Pi it runs as `systemctl --user status hackachussetts-ai`. Settings: `AI_POLL_SECONDS` (5),
+`AI_BACKLOG_HOURS` (48), `AI_MAX_ATTEMPTS` (3), `AI_MAX_PER_HOUR` (120).
 
 ## Two panels
 
@@ -194,7 +204,13 @@ After signing in, staff see:
   reporter. Invalid requires a note. These set `gov.status` to `in_progress` / `resolved` / `rejected`,
   add a step to `gov.status_history` with `updated_by` = the staff ID, and show up on the public issues board.
   If no department is assigned yet, In progress assigns the AI's suggested department.
-- **Filters:** Open / Closed / All, "Only my department" (on by default for department accounts), and search.
+- **Filters:** Open / Closed / All, and search.
+- **Grouped issues:** reports of the same issue show as one entry with "N reports". The details list every report
+  and why it was merged. Reports are merged (`backend/problems.py`) when they have the same photo (exact copy or
+  a resized/re-saved one, within 1 km), are within 50 m with the same or a related AI category (e.g. pothole and
+  damaged road surface), or are within the phones' GPS accuracy (up to 150 m), same department, and the AI says
+  the two photos show the same thing. Actions apply to every report of the issue. The public board also shows one
+  entry per issue.
 - **Criteria** button: the full rules below.
 
 ### Run locally
@@ -409,6 +425,7 @@ stay the same.
 
 ```bash
 systemctl --user status hackachussetts-report        # ~/.config/systemd/user/hackachussetts-report.service
+systemctl --user status hackachussetts-ai            # AI worker, backend/worker.py
 sudo tailscale funnel --bg --https=10000 http://127.0.0.1:8610
 ```
 

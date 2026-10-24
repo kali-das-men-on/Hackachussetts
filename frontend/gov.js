@@ -135,13 +135,36 @@ function createGov(deps) {
     return { ...r, user, assessment: assess(r, now) };
   }
 
+  // One entry per issue: reports merged into the same problem (backend/problems.py) are shown as
+  // the problem's first report, with every report of it in `reports` (oldest first).
+  const issueKey = (r) => r.problem?.id || r.id;
+  function groupIssues(all, now) {
+    const groups = new Map();
+    for (const r of all) {
+      const k = issueKey(r);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(r);
+    }
+    return [...groups.values()].map((members) => {
+      members.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+      const lead = members.find((m) => m.problem?.is_first_report) || members[0];
+      const issue = forStaff(lead, now);
+      issue.reports = members.map((m) => {
+        const s = forStaff(m, now);
+        delete s.assessment;
+        return s;
+      });
+      issue.open = members.some((m) => !DONE.includes(m.gov.status));
+      return issue;
+    });
+  }
+
   async function reports(res, url) {
     const status = url.searchParams.get('status') || 'open';
     if (!['open', 'closed', 'all'].includes(status)) return send(res, 400, { error: 'bad status filter' });
     const now = Date.now();
-    const list = (await store.list())
-      .filter((r) => status === 'all' || (status === 'open') !== DONE.includes(r.gov.status))
-      .map((r) => forStaff(r, now))
+    const list = groupIssues(await store.list(), now)
+      .filter((i) => status === 'all' || (status === 'open') === i.open)
       .sort((a, b) => b.assessment.rank - a.assessment.rank || a.created_at.localeCompare(b.created_at));
     send(res, 200, { reports: list, criteria: { tiers: TIERS, valid: VALID_RULES, categories: CATEGORY } });
   }
@@ -163,9 +186,13 @@ function createGov(deps) {
       const ai = DEPARTMENTS.includes(r.ai?.department) ? r.ai.department : null;
       changes.department = ai || user.department || 'other';
     }
-    const updated = await store.updateGov(id, changes);
-    console.log(`gov ${user.id} ${id} -> ${status}`);
-    send(res, 200, { report: forStaff(updated, Date.now()) });
+    // The action is for the issue, so every report of it gets the same status and note.
+    const all = await store.list();
+    const members = all.filter((m) => issueKey(m) === issueKey(r));
+    for (const m of members) await store.updateGov(m.id, changes);
+    console.log(`gov ${user.id} ${members.map((m) => m.id).join(',')} -> ${status}`);
+    const fresh = (await store.list()).filter((m) => issueKey(m) === issueKey(r));
+    send(res, 200, { report: groupIssues(fresh, Date.now())[0] });
   }
 
   // Returns true when the request was a /api/gov route.

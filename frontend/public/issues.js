@@ -91,7 +91,7 @@ function issueCard(issue) {
       h('div', { class: 'issue-head' }, h('b', { text: title }), badge(issue.status)),
       h('div', { class: 'issue-desc', text: issue.description || 'No description' }),
       h('div', { class: 'muted', text: where }),
-      h('div', { class: 'muted small', text: `Reported ${timeAgo(issue.created_at)} · updated ${timeAgo(issue.updated_at)}` }),
+      h('div', { class: 'muted small', text: `Reported ${timeAgo(issue.created_at)}${issue.report_count > 1 ? ` · ${issue.report_count} reports` : ''} · updated ${timeAgo(issue.updated_at)}` }),
       progress(issue)));
   return h('details', { class: 'card issue', id: 'issue-' + issue.id },
     summary,

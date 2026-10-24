@@ -16,7 +16,7 @@ const DEPT_LABEL = {
 const TIER_COLOR = { P1: '#dc2626', P2: '#ea580c', P3: '#d97706', P4: '#71717a' }; // red / orange / amber / zinc
 const CLOSED_COLOR = '#a1a1aa';
 
-const state = { user: null, status: 'open', mine: false, q: '', reports: [], criteria: null, selected: null };
+const state = { user: null, status: 'open', q: '', reports: [], criteria: null, selected: null };
 let map, layer;
 const markers = new Map();
 
@@ -72,10 +72,6 @@ function start(user) {
   $('#login').hidden = true;
   $('#app').hidden = false;
   $('#who').textContent = `${user.name} · ${user.id}`;
-  $('#mine-label').textContent = user.department ? `Only ${DEPT_LABEL[user.department]}` : 'My department';
-  $('#mine').parentElement.hidden = !user.department;
-  state.mine = Boolean(user.department);
-  $('#mine').checked = state.mine;
   initMap();
   requestAnimationFrame(movePill);
   load();
@@ -94,16 +90,16 @@ async function load() {
   }
 }
 
-function deptOf(r) {
-  return r.gov.department || r.assessment.suggested_department;
+function members(r) {
+  return r.reports && r.reports.length ? r.reports : [r];
 }
 
 function visible() {
   const q = state.q.toLowerCase();
   return state.reports.filter((r) => {
-    if (state.mine && state.user.department && deptOf(r) !== state.user.department) return false;
     if (!q) return true;
-    const hay = [r.id, r.user.location.address, r.user.description, r.ai?.summary, r.assessment.category].join(' ').toLowerCase();
+    const hay = [r.assessment.category, r.problem?.id, ...members(r).flatMap((m) => [m.id, m.user.location.address, m.user.description, m.ai?.summary])]
+      .join(' ').toLowerCase();
     return hay.includes(q);
   });
 }
@@ -134,6 +130,7 @@ function card(r, i) {
           ${validBadge(r.ai)}
           <span class="badge gray">${esc(STATUS_LABEL[r.gov.status])}</span>
           ${a.overdue ? '<span class="badge bad">Past target</span>' : ''}
+          ${members(r).length > 1 ? `<span class="badge many" title="${esc(members(r).map((m) => m.id).join(', '))}">${members(r).length} reports</span>` : ''}
         </span>
       </span>
       <span class="score" title="${esc(a.rank_reason)}"><b>${sev ?? '–'}</b><small>severity</small></span>
@@ -199,8 +196,10 @@ function detail(r) {
       </div>
     </div>
 
+    ${reportsOf(r)}
+
     <form class="actions" data-id="${esc(r.id)}">
-      <input name="note" maxlength="300" placeholder="Note to the reporter (public; required for Invalid)">
+      <input name="note" maxlength="300" placeholder="Note to the reporter${members(r).length > 1 ? 's' : ''} (public; required for Invalid)">
       <div class="btns">
         <button type="button" data-action="in_progress" ${g.status === 'in_progress' ? 'disabled' : ''}>In progress</button>
         <button type="button" data-action="complete" class="ok" ${g.status === 'resolved' ? 'disabled' : ''}>Complete</button>
@@ -211,14 +210,32 @@ function detail(r) {
   </div>`;
 }
 
+// The other reports merged into this issue, with why each one was matched.
+function reportsOf(r) {
+  const list = members(r);
+  if (list.length < 2) return '';
+  const p = r.problem || {};
+  return `<div class="box merged">
+    <h3>${list.length} reports of this issue <small class="muted">${p.reporter_count ? `· ${p.reporter_count} separate reporter${p.reporter_count === 1 ? '' : 's'}` : ''}</small></h3>
+    <p class="muted"><small>Merged because they have the same photo, or are close together with the same kind of issue, or the AI found the photos show the same thing. Actions below apply to all of them.</small></p>
+    <ul class="merged-list">${list.map((m) => `<li>
+      <a href="/api/gov/media/${esc(m.user.photo.path)}" target="_blank"><img src="/api/gov/media/${esc(m.user.photo.path)}" alt="" loading="lazy"></a>
+      <span><b>${esc(m.id)}</b> · ${esc(fmtDate(m.created_at))}${m.ai?.severity_score != null ? ` · severity ${esc(m.ai.severity_score)}` : ''}<br>
+      ${esc(m.user.description || m.ai?.summary || 'No description')}<br>
+      <small class="muted">${m.id === r.id ? 'First report' : esc(m.problem?.merge_reason || 'merged')}${m.problem && !m.problem.counted ? ' · same reporter or photo as an earlier report' : ''}
+      · contact: ${esc(m.user.contact?.email || m.user.contact?.phone || 'none')}</small></span>
+    </li>`).join('')}</ul>
+  </div>`;
+}
+
 // animate = staggered blur-fade of the list (only on a fresh load, not on every click).
 function render(animate = false) {
   const items = visible();
-  const open = state.reports.filter((r) => !['resolved', 'rejected'].includes(r.gov.status)).length;
-  $('#counts').textContent = `${items.length} shown${state.status !== 'closed' ? ` · ${open} open` : ''}`;
+  const open = state.reports.filter((r) => r.open ?? !['resolved', 'rejected'].includes(r.gov.status)).length;
+  $("#counts").textContent = `${items.length} issue${items.length === 1 ? "" : "s"} shown${state.status !== 'closed' ? ` · ${open} open` : ''}`;
   for (const r of state.reports) r.photo_src = `/api/gov/media/${r.user.photo.path}`;
   $('#list').classList.toggle('enter', animate);
-  $('#list').innerHTML = items.length ? items.map(card).join('') : '<li class="muted">No reports match.</li>';
+  $('#list').innerHTML = items.length ? items.map(card).join('') : '<li class="muted">No issues match.</li>';
   drawMap(items);
 }
 
@@ -331,10 +348,6 @@ document.querySelector('.seg').addEventListener('click', (e) => {
   state.status = b.dataset.status;
   state.selected = null;
   load();
-});
-$('#mine').addEventListener('change', (e) => {
-  state.mine = e.target.checked;
-  render();
 });
 $('#search').addEventListener('input', (e) => {
   state.q = e.target.value.trim();

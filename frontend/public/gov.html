@@ -39,13 +39,12 @@
       <button data-status="closed">Closed</button>
       <button data-status="all">All</button>
     </div>
-    <label><input type="checkbox" id="mine"> <span id="mine-label">My department</span></label>
     <input id="search" type="search" placeholder="Search id, address, text">
   </div>
 
   <main class="panels">
     <section class="list-panel" aria-label="Ranked reports">
-      <p class="hint muted">Ranked by AI: severity, days open, past target. Click a report for details.</p>
+      <p class="hint muted">Ranked by AI: severity, days open, past target. Reports of the same issue are grouped. Click an issue for details.</p>
       <ol id="list"></ol>
     </section>
     <section class="map-panel" aria-label="Map">
