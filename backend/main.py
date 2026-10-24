@@ -12,6 +12,7 @@
 
 Run:  cd backend && uvicorn main:app --port 8610
 """
+import hashlib
 import os
 import re
 import sys
@@ -38,7 +39,8 @@ load_dotenv(HERE.parent / ".env")
 load_dotenv(HERE / ".env")
 
 import agent  # noqa: E402  (needs .env loaded first)
-from prompts import CATEGORIES  # noqa: E402
+import problems  # noqa: E402
+from prompts import normalize_category  # noqa: E402
 
 # --- config (all from .env) ---
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -63,6 +65,17 @@ BUCKET = os.getenv("SUPABASE_BUCKET", "civic-reports")
 
 MAX_PHOTO = 8 * 1024 * 1024
 MAX_AUDIO = 3 * 1024 * 1024
+
+# Spam limits, counted over the last hour. Every stored report triggers a paid model call,
+# so these also cap AI spend. Override in .env (RATE_LIMIT_*).
+RATE_DEVICE_PER_HOUR = problems._int_env("RATE_LIMIT_DEVICE_PER_HOUR", 10)
+RATE_IP_PER_HOUR = problems._int_env("RATE_LIMIT_IP_PER_HOUR", 30)  # generous: campus Wi-Fi shares one IP
+RATE_ALL_PER_HOUR = problems._int_env("RATE_LIMIT_ALL_PER_HOUR", 300)  # emergency brake for the whole site
+IP_HASH_SALT = os.getenv("IP_HASH_SALT", "civic-reports")
+
+
+class TooManyReports(Exception):
+    pass
 # The shared schema example writes severity_score as a string ("64"). Set to False for a JSON number.
 SCORE_AS_STRING = True
 
@@ -134,12 +147,48 @@ def ready():
                 ADD COLUMN IF NOT EXISTS gov_feedback       text,
                 ADD COLUMN IF NOT EXISTS gov_internal_notes text,
                 ADD COLUMN IF NOT EXISTS gov_updated_by     text,
-                ADD COLUMN IF NOT EXISTS gov_updated_at     timestamptz"""
+                ADD COLUMN IF NOT EXISTS gov_updated_at     timestamptz,
+                ADD COLUMN IF NOT EXISTS gov_status_history jsonb NOT NULL DEFAULT '[]'::jsonb"""
         )
         c.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS civic_reports_client_id ON civic_reports (client_report_id)"
         )
+        # Spam checks and problem merging (safe to re-run).
+        c.execute(
+            """ALTER TABLE civic_reports
+                ADD COLUMN IF NOT EXISTS ip_hash      text,
+                ADD COLUMN IF NOT EXISTS photo_sha256 text,
+                ADD COLUMN IF NOT EXISTS problem_id   text,
+                ADD COLUMN IF NOT EXISTS counted      boolean NOT NULL DEFAULT false"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS civic_reports_problem ON civic_reports (problem_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS civic_reports_device ON civic_reports (device_id, created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS civic_reports_ip ON civic_reports (ip_hash, created_at)")
+        c.execute("CREATE SEQUENCE IF NOT EXISTS civic_problem_seq START 1001")
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS civic_problems (
+                id               text PRIMARY KEY,
+                created_at       timestamptz NOT NULL DEFAULT now(),
+                last_reported_at timestamptz NOT NULL DEFAULT now(),
+                status           text NOT NULL DEFAULT 'open',
+                category         text NOT NULL,
+                department       text,
+                lat              double precision,
+                lng              double precision,
+                address          text,
+                summary          text,
+                first_report_id  text,
+                top_report_id    text,
+                report_count     integer NOT NULL DEFAULT 1,
+                reporter_count   integer NOT NULL DEFAULT 1,
+                base_severity    integer NOT NULL DEFAULT 0,
+                severity_score   integer NOT NULL DEFAULT 0,
+                severity_note    text
+            )"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS civic_problems_open ON civic_problems (status, category)")
         c.execute("ALTER TABLE civic_reports ENABLE ROW LEVEL SECURITY")
+        c.execute("ALTER TABLE civic_problems ENABLE ROW LEVEL SECURITY")
     _db_ready = True
 
 
@@ -193,6 +242,19 @@ def to_json(r: dict) -> dict:
             },
         },
         "ai": ai,  # null until the agent has finished (a few seconds after submit)
+        # The merged problem this report belongs to; null while unanalyzed or if the AI marked it invalid.
+        "problem": (
+            {
+                "id": r["problem_id"],
+                "status": r["p_status"],
+                "severity_score": score(r["p_severity_score"]),
+                "report_count": r["p_report_count"],
+                "reporter_count": r["p_reporter_count"],
+                "is_first_report": r["p_first_report_id"] == r["id"],
+                "counted": r["counted"],  # false = same reporter / photo as an earlier report, adds no severity
+            }
+            if r.get("problem_id") else None
+        ),
         "gov": {
             "status": r["gov_status"],
             "department": r["gov_department"],
@@ -201,6 +263,7 @@ def to_json(r: dict) -> dict:
             "internal_notes": r["gov_internal_notes"],
             "updated_by": r["gov_updated_by"],
             "updated_at": iso(r["gov_updated_at"]),
+            "status_history": r.get("gov_status_history") or [],
         },
     }
 
@@ -257,13 +320,21 @@ def storage_delete(path: str):
 
 # ---------- AI ----------
 def analyze_report(report_id: str, **inputs):
-    """Background task: run the agent and save its result in the row's `ai` column."""
+    """Background task: run the agent, save its result in `ai`, then merge the report into a problem."""
     try:
         ai = agent.run_agent(**inputs)
         with db() as c:
             c.execute("UPDATE civic_reports SET ai = %s WHERE id = %s", (Jsonb(ai), report_id))
     except Exception as e:
         print(f"Agent failed for {report_id}: {e}")
+        return
+    try:
+        with db() as c:
+            pid = problems.attach(c, report_id)
+        print(f"{report_id}: valid={ai['valid']} problem={pid}")
+    except Exception:
+        print(f"Merging {report_id} into a problem failed:")
+        traceback.print_exc()
 
 
 def ask_ai(system: str, messages: list) -> str:
@@ -336,6 +407,36 @@ def parse_time(v):
         return None
 
 
+def check_rate_limits(device_id, ip_hash):
+    """Raise TooManyReports if this device / IP / the whole site sent too many reports in the last hour."""
+    with db() as c:
+        def recent(column, value):
+            return c.execute(
+                f"SELECT count(*) AS n FROM civic_reports WHERE {column} = %s AND created_at > now() - interval '1 hour'",
+                (value,),
+            ).fetchone()["n"]
+
+        if device_id and recent("device_id", device_id) >= RATE_DEVICE_PER_HOUR:
+            raise TooManyReports("You've sent a lot of reports in the last hour. Please try again later.")
+        if ip_hash and recent("ip_hash", ip_hash) >= RATE_IP_PER_HOUR:
+            raise TooManyReports("Too many reports from your network in the last hour. Please try again later.")
+        total = c.execute(
+            "SELECT count(*) AS n FROM civic_reports WHERE created_at > now() - interval '1 hour'"
+        ).fetchone()["n"]
+        if total >= RATE_ALL_PER_HOUR:
+            raise TooManyReports("The service is very busy right now. Please try again in a little while.")
+
+
+def client_ip_hash(request: Request):
+    """A salted hash of the caller's IP (never the raw address). None if we can't tell callers apart,
+    e.g. everyone arrives from a local proxy that sends no X-Forwarded-For header."""
+    fwd = request.headers.get("x-forwarded-for")
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else None)
+    if not ip or ip in ("127.0.0.1", "::1", "testclient"):
+        return None
+    return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()[:32]
+
+
 def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, f: dict):
     """Upload the files and insert the row. Blocking, so it runs in a thread.
     Returns (report_id, is_duplicate)."""
@@ -346,6 +447,8 @@ def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, f: dict):
             row = c.execute("SELECT id FROM civic_reports WHERE client_report_id = %s", (cid,)).fetchone()
         if row:
             return row["id"], True
+
+    check_rate_limits(f["device_id"], f["ip_hash"])
 
     ensure_bucket()
     with db() as c:
@@ -370,8 +473,9 @@ def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, f: dict):
                     contact_email, contact_phone, lat, lng, accuracy_m, location_source,
                     device_id, user_agent, was_queued_offline,
                     photo_path, photo_mime, photo_bytes,
-                    audio_path, audio_mime, audio_bytes, audio_duration_s)
-                   VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s)""",
+                    audio_path, audio_mime, audio_bytes, audio_duration_s,
+                    ip_hash, photo_sha256)
+                   VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s,%s)""",
                 (
                     rid, cid, f["submitted_at"], f["address"], f["description"], f["category"],
                     f["email"], f["phone"], f["lat"], f["lng"], f["accuracy_m"], f["location_source"],
@@ -379,6 +483,7 @@ def store_report(photo_bytes, photo_kind, audio_bytes, audio_kind, f: dict):
                     photo_path, photo_kind[0], len(photo_bytes),
                     audio_path, audio_kind[0] if audio_kind else None,
                     len(audio_bytes) if audio_kind else None, f["audio_duration_s"],
+                    f["ip_hash"], f["photo_sha256"],
                 ),
             )
     except psycopg.errors.UniqueViolation:
@@ -465,9 +570,7 @@ async def create_report(
     if phone is not None and not re.fullmatch(r"\+?\d{7,15}", phone):
         raise HTTPException(400, "Contact must be an email or phone number")
 
-    category = (category or "").strip() or None
-    if category and category not in CATEGORIES:
-        category = "other"
+    category = normalize_category(category)  # None if absent; old picker values are mapped; unknown -> "other"
     description = (description or "").strip()[:500] or None
 
     fields = {
@@ -486,12 +589,16 @@ async def create_report(
         "user_agent": (request.headers.get("user-agent") or "")[:300] or None,
         "queued": queued == "1",
         "audio_duration_s": seconds,
+        "ip_hash": client_ip_hash(request),
+        "photo_sha256": hashlib.sha256(photo_bytes).hexdigest(),
     }
 
     try:
         report_id, duplicate = await run_in_threadpool(
             store_report, photo_bytes, photo_kind, audio_bytes, audio_kind, fields
         )
+    except TooManyReports as e:
+        raise HTTPException(429, str(e))
     except Exception:
         traceback.print_exc()  # full detail in the server console
         raise HTTPException(502, "Could not save the report. Please try again.")
@@ -514,11 +621,17 @@ async def create_report(
     return JSONResponse({"id": report_id, "status": "received"}, status_code=201)
 
 
+REPORT_SELECT = """SELECT r.*, p.status AS p_status, p.severity_score AS p_severity_score,
+       p.report_count AS p_report_count, p.reporter_count AS p_reporter_count,
+       p.first_report_id AS p_first_report_id
+       FROM civic_reports r LEFT JOIN civic_problems p ON p.id = r.problem_id"""
+
+
 @app.get("/api/reports")
 def list_reports():
     ready()
     with db() as c:
-        rows = c.execute("SELECT * FROM civic_reports ORDER BY created_at DESC").fetchall()
+        rows = c.execute(REPORT_SELECT + " ORDER BY r.created_at DESC").fetchall()
     return [to_json(r) for r in rows]
 
 
@@ -526,10 +639,67 @@ def list_reports():
 def get_report(report_id: str):
     ready()
     with db() as c:
-        row = c.execute("SELECT * FROM civic_reports WHERE id = %s", (report_id,)).fetchone()
+        row = c.execute(REPORT_SELECT + " WHERE r.id = %s", (report_id,)).fetchone()
     if not row:
         raise HTTPException(404, "report not found")
     return to_json(row)
+
+
+# ---------- Problems (merged reports) ----------
+def problem_json(p: dict, members: list | None = None) -> dict:
+    out = {
+        "id": p["id"],
+        "status": p["status"],
+        "category": p["category"],
+        "department": p["department"],
+        "summary": p["summary"],
+        "location": {"lat": p["lat"], "lng": p["lng"], "address": p["address"]},
+        "severity_score": score(p["severity_score"]),
+        "severity_note": p["severity_note"],
+        "base_severity": score(p["base_severity"]),
+        "report_count": p["report_count"],
+        "reporter_count": p["reporter_count"],
+        "first_report_id": p["first_report_id"],
+        "top_report_id": p["top_report_id"],
+        "first_reported_at": iso(p["created_at"]),
+        "last_reported_at": iso(p["last_reported_at"]),
+    }
+    if members is not None:
+        out["reports"] = [
+            {
+                "id": m["id"],
+                "created_at": iso(m["created_at"]),
+                "counted": m["counted"],
+                "severity_score": score((m["ai"] or {}).get("severity_score")),
+            }
+            for m in members
+        ]
+    return out
+
+
+@app.get("/api/problems")
+def list_problems():
+    """Merged problems, most severe first. No reporter contact details."""
+    ready()
+    with db() as c:
+        rows = c.execute(
+            "SELECT * FROM civic_problems ORDER BY severity_score DESC, last_reported_at DESC"
+        ).fetchall()
+    return [problem_json(p) for p in rows]
+
+
+@app.get("/api/problems/{problem_id}")
+def get_problem(problem_id: str):
+    ready()
+    with db() as c:
+        p = c.execute("SELECT * FROM civic_problems WHERE id = %s", (problem_id,)).fetchone()
+        if not p:
+            raise HTTPException(404, "problem not found")
+        members = c.execute(
+            "SELECT id, created_at, counted, ai FROM civic_reports WHERE problem_id = %s ORDER BY created_at, id",
+            (problem_id,),
+        ).fetchall()
+    return problem_json(p, members)
 
 
 @app.get("/api/reports/{report_id}/{kind}")
@@ -568,5 +738,8 @@ def healthz():
     }
 
 
-# Serve the frontend so it is same-origin with the API (mounted last).
+# Include compatibility routes before the static frontend mount.
+# Importing this module registers the router against the already-created app.
+import compat  # noqa: E402,F401
+
 app.mount("/", StaticFiles(directory=HERE.parent / "frontend" / "public", html=True), name="frontend")

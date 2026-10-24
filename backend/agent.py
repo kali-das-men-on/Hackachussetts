@@ -25,14 +25,21 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, Field
 
-from prompts import CATEGORIES, DEPARTMENTS, SERVICE_AREA, SYSTEM_PROMPT, TAXONOMY_VERSION
+from prompts import (
+    CATEGORIES,
+    DEPARTMENT_OF,
+    EMERGENCY_CATEGORIES,
+    EMERGENCY_MIN_SEVERITY,
+    SERVICE_AREA,
+    SYSTEM_PROMPT,
+    TAXONOMY_VERSION,
+)
 
 MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-6-luna")
 STT_MODEL = os.getenv("OPENROUTER_STT_MODEL", "mistralai/voxtral-mini-transcribe-3-0")
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
-Category = Literal[tuple(CATEGORIES)]
-Department = Literal[tuple(DEPARTMENTS)]
+Category = Literal[tuple(CATEGORIES)]  # the model picks only a category; the department follows from it
 Source = Literal["photo", "description", "audio", "location"]
 
 
@@ -50,7 +57,6 @@ class AgentOutput(BaseModel):
     evidence: list[Source]
     category: Category
     category_reason: str
-    department: Department
     department_reason: str
     severity_score: int = Field(ge=0, le=100, description="0 = trivial, 100 = severe or imminent danger")
     severity_reason: str
@@ -180,19 +186,27 @@ def run_agent(*, photo_bytes: bytes, photo_mime: str = "image/jpeg", description
     }
     evidence = [s for s in dict.fromkeys(out.evidence) if available[s]]
 
+    valid = all(checks.values())
+    severity = max(0, min(100, int(out.severity_score)))
+    severity_reason = out.severity_reason.strip()
+    # Emergency categories (live power line, open manhole) never score below the floor.
+    if valid and out.category in EMERGENCY_CATEGORIES and severity < EMERGENCY_MIN_SEVERITY:
+        severity = EMERGENCY_MIN_SEVERITY
+        severity_reason += f" Treated as an emergency: score raised to at least {EMERGENCY_MIN_SEVERITY}."
+
     return {
         "processed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "model": MODEL,
         "taxonomy_version": TAXONOMY_VERSION,
-        "valid": all(checks.values()),
+        "valid": valid,
         "valid_checks": checks,
         "valid_reason": out.valid_reason.strip(),
         "evidence": evidence,
         "category": out.category,
         "category_reason": out.category_reason.strip(),
-        "department": out.department,
+        "department": DEPARTMENT_OF[out.category],
         "department_reason": out.department_reason.strip(),
-        "severity_score": max(0, min(100, int(out.severity_score))),
-        "severity_reason": out.severity_reason.strip(),
+        "severity_score": severity,
+        "severity_reason": severity_reason,
         "summary": out.summary.strip()[:300],
     }
