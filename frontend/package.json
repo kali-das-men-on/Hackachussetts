@@ -2,10 +2,17 @@
   "name": "hackachussetts-report",
   "version": "0.1.0",
   "private": true,
-  "description": "One-page, phone-first civic issue reporter with a local file store.",
+  "description": "One-page, phone-first civic issue reporter. Stores reports in Supabase or local files.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "db:schema": "node db-apply.js ../schema/supabase.sql",
+    "db:apply": "node db-apply.js"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
 }

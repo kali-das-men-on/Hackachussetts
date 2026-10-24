@@ -13,7 +13,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Status = Literal["received", "in_review", "assigned", "resolved", "rejected"]
+Status = Literal["received", "in_review", "assigned", "in_progress", "resolved", "rejected"]
 LocationSource = Literal["gps", "map", "address"]
 Category = Literal["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other"]
 PhotoMime = Literal["image/jpeg", "image/png", "image/webp"]
@@ -62,6 +62,14 @@ class Meta(BaseModel):
     was_queued_offline: bool = False
 
 
+class StatusEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Status
+    at: datetime
+    note: Optional[str] = Field(default=None, max_length=300, description="Public note from staff.")
+
+
 class Report(BaseModel):
     """One civic issue report, exactly as stored in data/reports.jsonl."""
 
@@ -72,6 +80,9 @@ class Report(BaseModel):
     created_at: datetime
     submitted_at: Optional[datetime] = None
     status: Status = "received"
+    updated_at: Optional[datetime] = None
+    # Oldest first; older reports have none (treated as [received at created_at]).
+    status_history: list[StatusEvent] = Field(default_factory=list)
     photo: Photo
     audio: Optional[Audio] = None
     location: Location

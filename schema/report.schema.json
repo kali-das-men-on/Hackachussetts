@@ -2,79 +2,129 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hackachussetts/report.schema.json",
   "title": "Report",
-  "description": "One civic issue report. Stored as one JSON line in data/reports.jsonl today; maps 1:1 to the `reports` table in schema.sql.",
+  "description": "One civic issue report, as returned by GET /api/reports (frontend/server.js and backend/main.py) and stored per line in data/reports.jsonl. In Supabase it is one civic_reports row; civic_report_json() in schema/supabase.sql builds this shape.",
   "type": "object",
-  "required": ["id", "client_report_id", "created_at", "status", "photo", "location"],
+  "required": ["id", "client_report_id", "created_at", "user", "ai", "gov"],
   "additionalProperties": false,
+  "$defs": {
+    "status": { "type": "string", "enum": ["received", "in_review", "assigned", "in_progress", "resolved", "rejected"] },
+    "category": { "type": "string", "enum": ["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other"] },
+    "department": { "type": "string", "enum": ["public_works", "parks_and_recreation", "police", "fire", "health_and_inspections", "other"] },
+    "score": { "type": "string", "pattern": "^(100|[1-9]?[0-9])$", "description": "0-100, sent as a string for now." }
+  },
   "properties": {
-    "id": {
-      "type": "string",
-      "pattern": "^R-[0-9]+$",
-      "description": "Human-friendly reference number shown to the reporter."
-    },
-    "client_report_id": {
-      "type": "string",
-      "maxLength": 64,
-      "description": "UUID generated on the device. Used to de-duplicate retries and offline re-sends."
-    },
+    "id": { "type": "string", "pattern": "^R-[0-9]+$", "description": "R-<number>, starts at R-1001 (Supabase sequence civic_report_seq)." },
+    "client_report_id": { "type": ["string", "null"], "maxLength": 64, "description": "UUID made on the device; de-duplicates retries. null if the client sent none." },
     "created_at": { "type": "string", "format": "date-time", "description": "Server receive time (UTC)." },
-    "submitted_at": { "type": ["string", "null"], "format": "date-time", "description": "Time the user tapped Send on the device." },
-    "status": { "type": "string", "enum": ["received", "in_review", "assigned", "resolved", "rejected"] },
-    "photo": {
+
+    "user": {
+      "description": "What the resident submitted. Never changed after intake.",
       "type": "object",
-      "required": ["path", "mime", "bytes"],
       "additionalProperties": false,
+      "required": ["photo", "location"],
       "properties": {
-        "path": { "type": "string", "description": "Relative to data/, e.g. photos/R-1001.jpg. EXIF stripped (re-encoded on the device)." },
-        "mime": { "type": "string", "enum": ["image/jpeg", "image/png", "image/webp"] },
-        "bytes": { "type": "integer", "minimum": 1 }
+        "submitted_at": { "type": ["string", "null"], "format": "date-time", "description": "When Send was tapped on the device." },
+        "photo": {
+          "type": "object", "additionalProperties": false, "required": ["path", "mime", "bytes"],
+          "properties": {
+            "path": { "type": "string", "description": "photos/<id>.<ext>: key in Supabase Storage bucket civic-reports, or relative to data/." },
+            "mime": { "type": "string", "enum": ["image/jpeg", "image/png", "image/webp"] },
+            "bytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "audio": {
+          "description": "Optional voice note, at most 30 s. null when none.",
+          "type": ["object", "null"], "additionalProperties": false, "required": ["path", "mime", "bytes"],
+          "properties": {
+            "path": { "type": "string", "description": "audio/<id>.<ext>" },
+            "mime": { "type": "string", "enum": ["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/wav"] },
+            "bytes": { "type": "integer", "minimum": 1 },
+            "duration_s": { "type": ["number", "null"], "minimum": 0, "maximum": 30, "description": "Measured on the device." }
+          }
+        },
+        "description": { "type": ["string", "null"], "maxLength": 500 },
+        "category": { "description": "The reporter's pick; the current frontend sends none (null).", "anyOf": [{ "$ref": "#/$defs/category" }, { "type": "null" }] },
+        "location": {
+          "type": "object", "additionalProperties": false, "required": ["source"],
+          "properties": {
+            "lat": { "type": ["number", "null"], "minimum": -90, "maximum": 90 },
+            "lng": { "type": ["number", "null"], "minimum": -180, "maximum": 180 },
+            "accuracy_m": { "type": ["number", "null"], "minimum": 0 },
+            "source": { "type": "string", "enum": ["gps", "map", "address"] },
+            "address": { "type": ["string", "null"], "maxLength": 300 }
+          }
+        },
+        "contact": {
+          "description": "Private: never on the public board.",
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "email": { "type": ["string", "null"], "maxLength": 254 },
+            "phone": { "type": ["string", "null"], "maxLength": 32 }
+          }
+        },
+        "meta": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "device_id": { "type": ["string", "null"], "maxLength": 64 },
+            "user_agent": { "type": ["string", "null"], "maxLength": 300 },
+            "was_queued_offline": { "type": "boolean" }
+          }
+        }
       }
     },
-    "audio": {
-      "description": "Optional voice note, at most 30 s. Absent or null when the reporter did not record one.",
+
+    "ai": {
+      "description": "Triage agent output (backend/agent.py). null until the agent finishes, or if it fails.",
       "type": ["object", "null"],
-      "required": ["path", "mime", "bytes"],
-      "additionalProperties": false,
       "properties": {
-        "path": { "type": "string", "description": "Relative to data/, e.g. audio/R-1001.webm." },
-        "mime": { "type": "string", "enum": ["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/wav"] },
-        "bytes": { "type": "integer", "minimum": 1 },
-        "duration_s": { "type": ["number", "null"], "minimum": 0, "maximum": 30, "description": "Length reported by the device." }
+        "processed_at": { "type": "string", "format": "date-time" },
+        "model": { "type": "string", "examples": ["openai/gpt-6-luna"] },
+        "taxonomy_version": { "type": "string", "examples": ["amherst-2026-10"] },
+        "valid": { "type": "boolean", "description": "true only if all three valid_checks are true." },
+        "valid_checks": {
+          "type": "object",
+          "properties": {
+            "photo_shows_issue": { "type": "boolean" },
+            "in_service_area": { "type": "boolean" },
+            "in_scope": { "type": "boolean" }
+          }
+        },
+        "valid_reason": { "type": "string" },
+        "evidence": { "type": "array", "items": { "enum": ["photo", "description", "audio", "location"] }, "description": "Only sources actually used." },
+        "category": { "$ref": "#/$defs/category" },
+        "category_reason": { "type": "string" },
+        "department": { "$ref": "#/$defs/department" },
+        "department_reason": { "type": "string" },
+        "severity_score": { "$ref": "#/$defs/score" },
+        "severity_reason": { "type": "string" },
+        "summary": { "type": "string" }
       }
     },
-    "location": {
-      "type": "object",
-      "required": ["source"],
-      "additionalProperties": false,
-      "properties": {
-        "lat": { "type": ["number", "null"], "minimum": -90, "maximum": 90 },
-        "lng": { "type": ["number", "null"], "minimum": -180, "maximum": 180 },
-        "accuracy_m": { "type": ["number", "null"], "minimum": 0 },
-        "source": { "type": "string", "enum": ["gps", "map", "address"], "description": "gps = device fix, map = pin moved by user, address = typed only." },
-        "address": { "type": ["string", "null"], "maxLength": 300 }
-      }
-    },
-    "description": { "type": ["string", "null"], "maxLength": 500 },
-    "category": {
-      "description": "Never sent by the client. null at intake; set later by AI analysis of the description. Older reports may hold a value the reporter picked.",
-      "type": ["string", "null"],
-      "enum": ["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other", null]
-    },
-    "contact": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "email": { "type": ["string", "null"], "maxLength": 254 },
-        "phone": { "type": ["string", "null"], "maxLength": 32 }
-      }
-    },
-    "meta": {
+
+    "gov": {
+      "description": "Staff-owned. Changed with POST /api/reports/<id>/status (set_report_gov() in SQL).",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "device_id": { "type": ["string", "null"], "maxLength": 64, "description": "Random per-browser id, not tied to identity." },
-        "user_agent": { "type": ["string", "null"], "maxLength": 300 },
-        "was_queued_offline": { "type": "boolean" }
+        "status": { "$ref": "#/$defs/status" },
+        "department": { "anyOf": [{ "$ref": "#/$defs/department" }, { "type": "null" }] },
+        "severity_score": { "anyOf": [{ "$ref": "#/$defs/score" }, { "type": "null" }] },
+        "feedback": { "type": ["string", "null"], "maxLength": 300, "description": "Latest public note to the reporter." },
+        "internal_notes": { "type": ["string", "null"], "maxLength": 2000, "description": "Staff only, never public." },
+        "updated_by": { "type": ["string", "null"] },
+        "updated_at": { "type": ["string", "null"], "format": "date-time" },
+        "status_history": {
+          "description": "Public timeline, oldest first. Added by this repo's servers (not in the original shared example).",
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["status", "at"],
+            "properties": {
+              "status": { "$ref": "#/$defs/status" },
+              "at": { "type": "string", "format": "date-time" },
+              "note": { "type": ["string", "null"], "maxLength": 300 }
+            }
+          }
+        }
       }
     }
   }
