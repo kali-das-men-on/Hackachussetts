@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Cookie, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import main
@@ -373,7 +373,7 @@ def gov_media(media_path: str, gov_session: str | None = Cookie(None)):
 
 @router.get("/gov")
 def gov_redirect():
-    return JSONResponse({"redirect": "/gov.html"}, status_code=307, headers={"Location": "/gov.html"})
+    return RedirectResponse("/gov.html", status_code=302)
 
 
 # Include compatibility routes before the static frontend mount.
