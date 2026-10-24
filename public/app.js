@@ -179,7 +179,14 @@ function setPoint(lat, lng, accuracy, source) {
     source === 'map' ? 'Pin placed on map' : rough ? 'Approximate location' + acc + ' — tap Adjust on map' : 'Location found' + acc,
     `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
   $('map-btn').textContent = 'Adjust on map';
-  if (marker) { marker.setLatLng([lat, lng]); }
+  if (marker) {
+    marker.setLatLng([lat, lng]);
+    if (map && source !== 'map') map.setView([lat, lng], 18);
+  } else if (source !== 'map') {
+    // Show the map automatically so the user can see and confirm the spot,
+    // even when the location came from GPS without them asking.
+    openMap();
+  }
   reverseGeocode(lat, lng);
   refresh();
 }
@@ -228,17 +235,26 @@ function loadLeaflet() {
   return leafletLoading;
 }
 
+let mapOpening = false;
 async function openMap() {
+  if (mapOpening) return;
+  mapOpening = true;
   $('map').hidden = false;
   $('map-btn').hidden = true;
   try { await loadLeaflet(); } catch {
+    mapOpening = false;
     $('map').hidden = true;
     $('map-btn').hidden = false;
     $('loc-manual').hidden = false;
     showBanner("Map couldn't load. Type an address instead.");
     return;
   }
-  if (map) { map.invalidateSize(); return; }
+  mapOpening = false;
+  if (map) {
+    map.invalidateSize();
+    if (state.point) { marker.setLatLng([state.point.lat, state.point.lng]); map.setView([state.point.lat, state.point.lng], 18); }
+    return;
+  }
   const start = state.point ? [state.point.lat, state.point.lng] : DEFAULT_CENTER;
   map = L.map('map', { zoomControl: true }).setView(start, state.point ? 18 : 13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -248,6 +264,9 @@ async function openMap() {
   const place = (ll) => { marker.setLatLng(ll); setPoint(ll.lat, ll.lng, null, 'map'); };
   marker.on('dragend', () => place(marker.getLatLng()));
   map.on('click', (e) => place(e.latlng));
+  $('map-hint').hidden = false;
+  // Leaflet sizes its tiles to the container; recompute once it is visible.
+  setTimeout(() => map && map.invalidateSize(), 0);
   if (!state.point) setLoc('busy', 'Tap the map where the problem is');
 }
 

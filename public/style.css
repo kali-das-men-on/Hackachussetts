@@ -112,6 +112,7 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .help li { margin-bottom: 4px; }
 
 #map { height: 240px; margin-top: 8px; border-radius: 12px; overflow: hidden; }
+.map-hint { margin-top: 8px; text-align: center; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chips button {
