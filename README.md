@@ -41,6 +41,22 @@ Stored locally until a database is connected:
 `schema/schema.sql` is the matching table for Postgres/SQLite. To move to a
 database, replace `frontend/store.js` (`init`, `findByClientId`, `insert`, `list`).
 
+### Sample data for testing
+
+`data/` is git-ignored because it holds real reports (contact details, device
+ids, photos) and the admin key. `sample-data/` is a cleaned copy that is safe to
+share: same layout as `data/`, 4 reports (one with a voice note), no contact
+details, device ids or admin key, and the voice note is a synthetic tone.
+
+```bash
+cd frontend && DATA_DIR=../sample-data ADMIN_KEY=test node server.js   # admin: /admin?key=test
+DATA_DIR=sample-data ADMIN_KEY=test uvicorn api.main:app --port 8620    # FastAPI, from the repo root
+```
+
+Set `ADMIN_KEY` when pointing at `sample-data/`; otherwise the server writes an
+`admin_key` file into it. New reports sent to that server are written there too,
+so copy the folder first if you want to keep it pristine.
+
 ## See all the reports
 
 Every submitted report is visible three ways. The admin key is printed to the
