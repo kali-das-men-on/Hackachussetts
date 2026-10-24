@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hackachussetts/report.schema.json",
+  "title": "Report",
+  "description": "One civic issue report. Stored as one JSON line in data/reports.jsonl today; maps 1:1 to the `reports` table in schema.sql.",
+  "type": "object",
+  "required": ["id", "client_report_id", "created_at", "status", "photo", "location"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^R-[0-9]+$",
+      "description": "Human-friendly reference number shown to the reporter."
+    },
+    "client_report_id": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "UUID generated on the device. Used to de-duplicate retries and offline re-sends."
+    },
+    "created_at": { "type": "string", "format": "date-time", "description": "Server receive time (UTC)." },
+    "submitted_at": { "type": ["string", "null"], "format": "date-time", "description": "Time the user tapped Send on the device." },
+    "status": { "type": "string", "enum": ["received", "in_review", "assigned", "resolved", "rejected"] },
+    "photo": {
+      "type": "object",
+      "required": ["path", "mime", "bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "Relative to data/, e.g. photos/R-1001.jpg. EXIF stripped (re-encoded on the device)." },
+        "mime": { "type": "string", "enum": ["image/jpeg", "image/png", "image/webp"] },
+        "bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "location": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": false,
+      "properties": {
+        "lat": { "type": ["number", "null"], "minimum": -90, "maximum": 90 },
+        "lng": { "type": ["number", "null"], "minimum": -180, "maximum": 180 },
+        "accuracy_m": { "type": ["number", "null"], "minimum": 0 },
+        "source": { "type": "string", "enum": ["gps", "map", "address"], "description": "gps = device fix, map = pin moved by user, address = typed only." },
+        "address": { "type": ["string", "null"], "maxLength": 300 }
+      }
+    },
+    "description": { "type": ["string", "null"], "maxLength": 500 },
+    "category": {
+      "type": ["string", "null"],
+      "enum": ["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other", null]
+    },
+    "contact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "email": { "type": ["string", "null"], "maxLength": 254 },
+        "phone": { "type": ["string", "null"], "maxLength": 32 }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_id": { "type": ["string", "null"], "maxLength": 64, "description": "Random per-browser id, not tied to identity." },
+        "user_agent": { "type": ["string", "null"], "maxLength": 300 },
+        "was_queued_offline": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b5fff">
+  <title>Report an Issue</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="form-view">
+    <header>
+      <h1>Report an issue</h1>
+      <p class="sub">Snap a photo, we add the location. No account needed.</p>
+    </header>
+
+    <!-- 1. Photo -->
+    <section class="card" id="photo-card">
+      <label class="big-btn" id="take-btn" for="photo-camera">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3 7.2 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9Zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg>
+        <span>Take photo</span>
+      </label>
+      <input type="file" id="photo-camera" accept="image/*" capture="environment" hidden>
+      <input type="file" id="photo-library" accept="image/*" hidden>
+      <label class="link" for="photo-library" id="library-link">or choose from library</label>
+
+      <div id="preview" hidden>
+        <img id="preview-img" alt="Your photo">
+        <label class="chip-btn" for="photo-camera">Retake</label>
+      </div>
+    </section>
+
+    <!-- 2. Location -->
+    <section class="card" id="loc-card">
+      <div class="row">
+        <span class="dot" id="loc-dot"></span>
+        <div class="grow">
+          <div id="loc-status">We use your location to tell the town where this is.</div>
+          <div id="loc-detail" class="muted"></div>
+        </div>
+        <button type="button" class="chip-btn" id="loc-btn">Locate me</button>
+      </div>
+      <div id="loc-manual" hidden>
+        <input type="text" id="address" placeholder="Type an address or nearby landmark" autocomplete="street-address" maxlength="300">
+      </div>
+      <button type="button" class="link" id="map-btn">Adjust on map</button>
+      <div id="map" hidden></div>
+    </section>
+
+    <!-- 3. Details -->
+    <section class="card">
+      <div class="chips" id="chips" role="radiogroup" aria-label="Category (optional)">
+        <button type="button" data-cat="pothole">Pothole</button>
+        <button type="button" data-cat="streetlight">Streetlight</button>
+        <button type="button" data-cat="trash">Trash</button>
+        <button type="button" data-cat="graffiti">Graffiti</button>
+        <button type="button" data-cat="sidewalk">Sidewalk</button>
+        <button type="button" data-cat="other">Other</button>
+      </div>
+      <textarea id="description" rows="2" maxlength="500" placeholder="What's wrong? (optional)"></textarea>
+      <input type="text" id="contact" inputmode="email" autocomplete="email" maxlength="254"
+             placeholder="Email or phone for updates (optional)">
+      <div id="contact-err" class="err" hidden>Enter an email or a phone number.</div>
+    </section>
+
+    <div id="banner" class="banner" hidden></div>
+    <div class="spacer"></div>
+  </main>
+
+  <footer id="send-bar">
+    <button type="button" id="send-btn" disabled>Add a photo to send</button>
+  </footer>
+
+  <main id="done-view" hidden>
+    <div class="done">
+      <svg viewBox="0 0 24 24" class="check" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+      <h1 id="done-title">Report sent</h1>
+      <p id="done-ref" class="ref"></p>
+      <p id="done-msg" class="muted"></p>
+      <button type="button" class="big-btn" id="again-btn"><span>Report another</span></button>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
