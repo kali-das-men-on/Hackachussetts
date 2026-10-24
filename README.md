@@ -43,10 +43,10 @@ database, replace `frontend/store.js` (`init`, `findByClientId`, `insert`, `list
 
 ### Sample data for testing
 
-`data/` is git-ignored because it holds real reports (contact details, device
-ids, photos) and the admin key. `sample-data/` is a cleaned copy that is safe to
-share: same layout as `data/`, 4 reports (one with a voice note), no contact
-details, device ids or admin key, and the voice note is a synthetic tone.
+`data/` is git-ignored because the live site writes real reports and the admin
+key there. `sample-data/` is a committed snapshot of the test reports (6 reports
+with photos, one with a voice note), same layout as `data/`. It includes the
+contact details entered while testing; it does not include `admin_key`.
 
 ```bash
 cd frontend && DATA_DIR=../sample-data ADMIN_KEY=test node server.js   # admin: /admin?key=test
