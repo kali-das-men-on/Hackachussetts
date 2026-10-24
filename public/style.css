@@ -82,6 +82,8 @@ header h1 { font-size: 26px; margin: 4px 0 2px; }
   cursor: pointer; white-space: nowrap;
 }
 
+.chip-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
 .row { display: flex; align-items: center; gap: 10px; }
 .grow { flex: 1; min-width: 0; }
 .grow > div { overflow-wrap: anywhere; }

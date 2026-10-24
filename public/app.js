@@ -95,14 +95,14 @@ function locationHelpSteps() {
       return [`iPhone Settings → Privacy & Security → Location Services → On.`,
         `Same screen → ${app} → "While Using the App".`, 'Come back and reload this page.'];
     }
-    return ['iPhone Settings → Privacy & Security → Location Services → On.',
-      'Same screen → Safari Websites → "While Using the App".',
-      'In Safari, tap the page menu (aA, left of the address) → Website Settings → Location → Allow.',
-      'Come back and reload this page.'];
+    // Safari's default is "Ask", so a reload re-prompts unless something stricter is set.
+    return ['Tap "Reload page", then tap Allow when Safari asks.',
+      'No question shown? Tap aA (left of the address) → Website Settings → Location → Ask, then reload.',
+      'Still nothing? iPhone Settings → Privacy & Security → Location Services → On → Safari Websites → "While Using the App".'];
   }
   if (/Android/.test(UA)) {
     const app = /SamsungBrowser/.test(UA) ? 'Samsung Internet' : /Firefox/.test(UA) ? 'Firefox' : 'Chrome';
-    return ['Tap the icon left of the address bar → Permissions → Location → Allow.',
+    return ['Tap the icon left of the address bar → Permissions (or Location) → Allow.',
       `Still blocked? Android Settings → Location → On, and Settings → Apps → ${app} → Permissions → Location → Allow.`,
       'Reload this page.'];
   }
@@ -161,6 +161,7 @@ function locationFailed(code) {
   showLocationHelp(code === 1 || code === 0);
   $('loc-manual').hidden = false;
   $('loc-btn').hidden = false;
+  $('loc-btn').classList.remove('primary');
   $('loc-btn').textContent = 'Try again';
   $('map-btn').textContent = 'Pick on map';
   refresh();
