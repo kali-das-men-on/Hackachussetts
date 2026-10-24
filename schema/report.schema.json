@@ -30,6 +30,18 @@
         "bytes": { "type": "integer", "minimum": 1 }
       }
     },
+    "audio": {
+      "description": "Optional voice note, at most 30 s. Absent or null when the reporter did not record one.",
+      "type": ["object", "null"],
+      "required": ["path", "mime", "bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "Relative to data/, e.g. audio/R-1001.webm." },
+        "mime": { "type": "string", "enum": ["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/wav"] },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "duration_s": { "type": ["number", "null"], "minimum": 0, "maximum": 30, "description": "Length reported by the device." }
+      }
+    },
     "location": {
       "type": "object",
       "required": ["source"],
@@ -44,6 +56,7 @@
     },
     "description": { "type": ["string", "null"], "maxLength": 500 },
     "category": {
+      "description": "Never sent by the client. null at intake; set later by AI analysis of the description. Older reports may hold a value the reporter picked.",
       "type": ["string", "null"],
       "enum": ["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other", null]
     },

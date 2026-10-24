@@ -14,6 +14,11 @@ CREATE TABLE reports (
     photo_mime          TEXT NOT NULL,
     photo_bytes         INTEGER NOT NULL,
 
+    audio_path          TEXT,                          -- optional voice note, NULL when none
+    audio_mime          TEXT CHECK (audio_mime IN ('audio/webm','audio/mp4','audio/ogg','audio/mpeg','audio/wav')),
+    audio_bytes         INTEGER,
+    audio_duration_s    REAL CHECK (audio_duration_s BETWEEN 0 AND 30),
+
     lat                 DOUBLE PRECISION,
     lng                 DOUBLE PRECISION,
     accuracy_m          DOUBLE PRECISION,
@@ -21,7 +26,7 @@ CREATE TABLE reports (
     address             TEXT,
 
     description         VARCHAR(500),
-    category            TEXT CHECK (category IN ('pothole','streetlight','trash','graffiti','sidewalk','other')),
+    category            TEXT CHECK (category IN ('pothole','streetlight','trash','graffiti','sidewalk','other')),  -- NULL at intake; filled by AI from the description
 
     contact_email       VARCHAR(254),
     contact_phone       VARCHAR(32),

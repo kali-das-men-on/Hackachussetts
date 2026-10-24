@@ -56,15 +56,28 @@
 
     <!-- 3. Details -->
     <section class="card">
-      <div class="chips" id="chips" role="radiogroup" aria-label="Category (optional)">
-        <button type="button" data-cat="pothole">Pothole</button>
-        <button type="button" data-cat="streetlight">Streetlight</button>
-        <button type="button" data-cat="trash">Trash</button>
-        <button type="button" data-cat="graffiti">Graffiti</button>
-        <button type="button" data-cat="sidewalk">Sidewalk</button>
-        <button type="button" data-cat="other">Other</button>
+      <textarea id="description" rows="3" maxlength="500" placeholder="What's wrong? Describe it, or record a voice note below. (optional)"></textarea>
+
+      <div id="audio-box">
+        <button type="button" class="chip-btn" id="rec-btn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+          <span>Record voice note (30 s max)</span>
+        </button>
+        <div id="rec-live" class="rec-row" hidden>
+          <span class="dot bad"></span>
+          <span class="grow">Recording <b id="rec-time">0:00</b> / 0:30</span>
+          <button type="button" class="chip-btn primary" id="rec-stop">Stop</button>
+        </div>
+        <div id="rec-done" hidden>
+          <audio id="rec-audio" controls preload="metadata"></audio>
+          <div class="rec-row">
+            <span class="grow muted" id="rec-len"></span>
+            <button type="button" class="chip-btn" id="rec-delete">Remove</button>
+          </div>
+        </div>
+        <div id="rec-err" class="err" hidden></div>
       </div>
-      <textarea id="description" rows="2" maxlength="500" placeholder="What's wrong? (optional)"></textarea>
+
       <input type="text" id="contact" inputmode="email" autocomplete="email" maxlength="254"
              placeholder="Email or phone for updates (optional)">
       <div id="contact-err" class="err" hidden>Enter an email or a phone number.</div>

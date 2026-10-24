@@ -5,6 +5,7 @@
 //   POST /api/reports         multipart form, see README / schema/
 //   POST /api/reports?fail=1  forced 503, for testing the retry path
 //   GET  /admin?key=...       list of stored reports (ADMIN_KEY env or data/admin_key)
+//   GET  /admin/photos/<file>, /admin/audio/<file>?key=...   stored media (audio supports Range)
 
 const http = require('node:http');
 const fs = require('node:fs');
@@ -14,10 +15,17 @@ const store = require('./store');
 
 const PORT = Number(process.env.PORT || 8610);
 const HOST = process.env.HOST || '127.0.0.1';
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const MAX_BODY = 8 * 1024 * 1024;
-const CATEGORIES = new Set(['pothole', 'streetlight', 'trash', 'graffiti', 'sidewalk', 'other']);
+const WEB_DIR = path.join(__dirname, 'public');
+const MAX_PHOTO = 8 * 1024 * 1024;
+const MAX_AUDIO = 3 * 1024 * 1024;
+const MAX_AUDIO_SECONDS = 30;
+const MAX_BODY = MAX_PHOTO + MAX_AUDIO + 256 * 1024;
 const MIME = {
+  '.webm': 'audio/webm',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -113,6 +121,17 @@ function sniffImage(buf) {
   return null;
 }
 
+// Browsers record WebM/Opus (Chrome, Firefox), MP4/AAC (Safari) or Ogg (Firefox).
+function sniffAudio(buf) {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return ['audio/webm', 'webm'];
+  if (buf.subarray(4, 8).toString() === 'ftyp') return ['audio/mp4', 'm4a'];
+  if (buf.subarray(0, 4).toString() === 'OggS') return ['audio/ogg', 'ogg'];
+  if (buf.subarray(0, 4).toString() === 'RIFF' && buf.subarray(8, 12).toString() === 'WAVE') return ['audio/wav', 'wav'];
+  if (buf.subarray(0, 3).toString() === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) return ['audio/mpeg', 'mp3'];
+  return null;
+}
+
 function splitContact(raw) {
   if (!raw) return { email: null, phone: null };
   if (raw.includes('@')) {
@@ -135,7 +154,7 @@ async function createReport(req, res, url) {
     const body = await readBody(req);
     form = await new Request('http://local/', { method: 'POST', headers: { 'content-type': ctype }, body }).formData();
   } catch (e) {
-    return send(res, e.status || 400, { error: e.status === 413 ? 'Photo too large' : 'Bad form data' });
+    return send(res, e.status || 400, { error: e.status === 413 ? 'Upload too large' : 'Bad form data' });
   }
 
   const clientId = str(form, 'client_report_id', 64);
@@ -146,8 +165,28 @@ async function createReport(req, res, url) {
   const photo = form.get('photo');
   if (!photo || typeof photo === 'string') return send(res, 400, { error: 'photo required' });
   const bytes = Buffer.from(await photo.arrayBuffer());
+  if (bytes.length > MAX_PHOTO) return send(res, 413, { error: 'Photo too large' });
   const kind = sniffImage(bytes);
   if (!kind) return send(res, 400, { error: 'photo must be JPEG, PNG or WebP' });
+
+  // Optional voice note. Checked before anything is written so a bad file never leaves a half-saved report.
+  let audio = null;
+  const audioFile = form.get('audio');
+  if (audioFile && typeof audioFile !== 'string' && audioFile.size > 0) {
+    if (audioFile.size > MAX_AUDIO) return send(res, 413, { error: 'Audio too large (max 3 MB)' });
+    const audioBytes = Buffer.from(await audioFile.arrayBuffer());
+    const audioKind = sniffAudio(audioBytes);
+    if (!audioKind) return send(res, 400, { error: 'audio must be WebM, MP4/M4A, Ogg, MP3 or WAV' });
+    // Length is reported by the device (the size cap above is the hard limit); allow 1 s of timer drift.
+    const seconds = num(form, 'audio_duration_s', 0, 3600);
+    if (seconds !== null && seconds > MAX_AUDIO_SECONDS + 1) return send(res, 400, { error: 'Audio is longer than 30 seconds' });
+    audio = {
+      bytes: audioBytes,
+      ext: audioKind[1],
+      mime: audioKind[0],
+      duration_s: seconds === null ? null : Math.round(Math.min(seconds, MAX_AUDIO_SECONDS) * 10) / 10,
+    };
+  }
 
   const lat = num(form, 'lat', -90, 90);
   const lng = num(form, 'lng', -180, 180);
@@ -160,9 +199,6 @@ async function createReport(req, res, url) {
 
   const contact = splitContact(str(form, 'contact', 254));
   if (!contact) return send(res, 400, { error: 'Contact must be an email or phone number' });
-
-  let category = str(form, 'category', 20);
-  if (category && !CATEGORIES.has(category)) category = 'other';
 
   const submittedAt = str(form, 'submitted_at', 40);
   const report = store.insert(
@@ -178,7 +214,7 @@ async function createReport(req, res, url) {
         address,
       },
       description: str(form, 'description', 500),
-      category,
+      category: null, // not asked from the user; filled in later by AI analysis of the description
       contact,
       meta: {
         device_id: str(form, 'device_id', 64),
@@ -188,8 +224,9 @@ async function createReport(req, res, url) {
     },
     bytes,
     kind[1],
+    audio,
   );
-  console.log(`${report.created_at} ${report.id} ${source} ${report.category || '-'}`);
+  console.log(`${report.created_at} ${report.id} ${source} audio=${audio ? audio.duration_s ?? '?' : '-'}`);
   send(res, 201, { id: report.id, status: report.status });
 }
 
@@ -210,7 +247,8 @@ function adminPage(res, key) {
         <td><a href="/admin/${esc(r.photo.path)}?key=${esc(key)}" target="_blank"><img src="/admin/${esc(r.photo.path)}?key=${esc(key)}" loading="lazy"></a></td>
         <td><b>${esc(r.id)}</b><br><small>${esc(r.created_at.replace('T', ' ').slice(0, 19))} UTC</small></td>
         <td>${where}<br>${esc(loc.address)}<br><small>${esc(loc.source)}</small></td>
-        <td>${esc(r.category)}<br>${esc(r.description)}</td>
+        <td>${esc(r.description)}${r.category ? `<br><small>${esc(r.category)}</small>` : ''}${
+          r.audio ? `<br><audio controls preload="none" src="/admin/${esc(r.audio.path)}?key=${esc(key)}"></audio><small>${esc(r.audio.duration_s ?? '?')} s voice note</small>` : ''}</td>
         <td>${esc(r.contact.email || r.contact.phone)}</td>
       </tr>`;
     })
@@ -240,6 +278,32 @@ function serveFile(res, file, cache) {
   });
 }
 
+// Audio needs HTTP Range support: Safari refuses to play <audio> from a server that ignores it.
+function serveMedia(req, res, file) {
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) return send(res, 404, 'Not found');
+    const headers = {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'Cache-Control': 'private, max-age=3600',
+      'Accept-Ranges': 'bytes',
+    };
+    const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (!m || (m[1] === '' && m[2] === '')) {
+      res.writeHead(200, { ...headers, 'Content-Length': st.size });
+      return req.method === 'HEAD' ? res.end() : fs.createReadStream(file).pipe(res);
+    }
+    let start = m[1] === '' ? Math.max(0, st.size - Number(m[2])) : Number(m[1]);
+    let end = m[1] === '' || m[2] === '' ? st.size - 1 : Math.min(Number(m[2]), st.size - 1);
+    if (start > end || start >= st.size) {
+      res.writeHead(416, { 'Content-Range': `bytes */${st.size}` });
+      return res.end();
+    }
+    res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(file, { start, end }).pipe(res);
+  });
+}
+
 // --- router -----------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
@@ -255,12 +319,16 @@ const server = http.createServer(async (req, res) => {
       const name = path.basename(p);
       return serveFile(res, path.join(store.PHOTO_DIR, name), 'private, max-age=3600');
     }
+    if (p.startsWith('/admin/audio/')) {
+      if (!authed) return send(res, 401, 'key required');
+      return serveMedia(req, res, path.join(store.AUDIO_DIR, path.basename(p)));
+    }
     if (p === '/healthz') return send(res, 200, { ok: true, reports: store.list().length });
 
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
     const rel = p === '/' ? 'index.html' : path.normalize(p).replace(/^[/\\]+/, '');
-    const file = path.join(PUBLIC_DIR, rel);
-    if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 404, 'Not found');
+    const file = path.join(WEB_DIR, rel);
+    if (!file.startsWith(WEB_DIR + path.sep)) return send(res, 404, 'Not found');
     serveFile(res, file, 'no-cache');
   } catch (e) {
     console.error(e);

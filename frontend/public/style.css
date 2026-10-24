@@ -114,14 +114,13 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 #map { height: 240px; margin-top: 8px; border-radius: 12px; overflow: hidden; }
 .map-hint { margin-top: 8px; text-align: center; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chips button {
-  min-height: 44px; padding: 0 14px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--line); border-radius: 999px;
-  font: inherit; font-size: 15px; cursor: pointer;
-}
-.chips button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip-btn svg { width: 18px; height: 18px; fill: currentColor; vertical-align: -3px; margin-right: 6px; }
+
+#audio-box { margin-top: 10px; }
+#rec-btn { width: 100%; }
+.rec-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+#rec-live { margin-top: 0; }
+#rec-done audio { display: block; width: 100%; height: 44px; }
 
 .banner {
   padding: 12px 14px; border-radius: 12px; margin-bottom: 12px;

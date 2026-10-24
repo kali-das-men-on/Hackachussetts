@@ -17,6 +17,7 @@ Status = Literal["received", "in_review", "assigned", "resolved", "rejected"]
 LocationSource = Literal["gps", "map", "address"]
 Category = Literal["pothole", "streetlight", "trash", "graffiti", "sidewalk", "other"]
 PhotoMime = Literal["image/jpeg", "image/png", "image/webp"]
+AudioMime = Literal["audio/webm", "audio/mp4", "audio/ogg", "audio/mpeg", "audio/wav"]
 
 
 class Photo(BaseModel):
@@ -25,6 +26,15 @@ class Photo(BaseModel):
     path: str = Field(description="Relative to data/, e.g. photos/R-1001.jpg.")
     mime: PhotoMime
     bytes: int = Field(ge=1)
+
+
+class Audio(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Relative to data/, e.g. audio/R-1001.webm.")
+    mime: AudioMime
+    bytes: int = Field(ge=1)
+    duration_s: Optional[float] = Field(default=None, ge=0, le=30)
 
 
 class Location(BaseModel):
@@ -63,8 +73,10 @@ class Report(BaseModel):
     submitted_at: Optional[datetime] = None
     status: Status = "received"
     photo: Photo
+    audio: Optional[Audio] = None
     location: Location
     description: Optional[str] = Field(default=None, max_length=500)
+    # Not collected from the reporter: null at intake, filled in by AI analysis of the description.
     category: Optional[Category] = None
     contact: Contact = Field(default_factory=Contact)
     meta: Meta = Field(default_factory=Meta)

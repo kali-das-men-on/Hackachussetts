@@ -3,16 +3,18 @@
 const $ = (id) => document.getElementById(id);
 const QUEUE_KEY = 'pending_reports_v1';
 const GEO_TIMEOUT_MS = 8000;
+const AUDIO_MAX_S = 30;
+const AUDIO_MIN_S = 0.5;
 const MAX_PX = 1280;
 const DEFAULT_CENTER = [42.3601, -71.0589]; // Boston, used only when we have no fix
 const FAIL = new URLSearchParams(location.search).get('fail') === '1';
 
 const state = {
   photo: null,        // Blob, re-encoded JPEG (EXIF stripped)
+  audio: null,        // { blob, duration_s, name } optional voice note, <= 30 s
   point: null,        // { lat, lng, accuracy_m }
   source: null,       // 'gps' | 'map' | 'address'
   address: '',        // reverse-geocoded or typed
-  category: null,
   locating: null,     // Promise while a GPS request is in flight
   sending: false,
   retry: false,       // last send hit a server error
@@ -270,6 +272,106 @@ async function openMap() {
   if (!state.point) setLoc('busy', 'Tap the map where the problem is');
 }
 
+// ---------- voice note (MediaRecorder, 30 s max, optional) ----------
+let rec = null; // { mr, stream, chunks, t0, tick, cap, done } while recording
+
+const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+function recError(msg) {
+  $('rec-err').textContent = msg || '';
+  $('rec-err').hidden = !msg;
+}
+
+// Chrome/Firefox record WebM/Opus, Safari records MP4/AAC. The server accepts both.
+function pickAudioMime() {
+  return ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus']
+    .find((t) => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function audioExt(mime) {
+  if (/mp4|aac/.test(mime)) return 'm4a';
+  if (/ogg/.test(mime)) return 'ogg';
+  if (/wav/.test(mime)) return 'wav';
+  if (/mpeg|mp3/.test(mime)) return 'mp3';
+  return 'webm';
+}
+
+function setAudio(a) {
+  if (state.audio) URL.revokeObjectURL($('rec-audio').src);
+  state.audio = a;
+  $('rec-done').hidden = !a;
+  $('rec-btn').hidden = !!a;
+  if (a) {
+    $('rec-audio').src = URL.createObjectURL(a.blob);
+    $('rec-len').textContent = `Voice note · ${fmtTime(a.duration_s)}`;
+  } else {
+    $('rec-audio').removeAttribute('src');
+  }
+}
+
+async function startRecording() {
+  if (rec || state.audio) return;
+  recError('');
+  $('rec-btn').disabled = true; // the permission prompt is async; ignore taps until it resolves
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    $('rec-btn').disabled = false;
+    recError(e.name === 'NotAllowedError' || e.name === 'SecurityError'
+      ? 'Microphone is blocked for this site. Allow it in your browser settings, or type a description.'
+      : "Couldn't open the microphone. Type a description instead.");
+    return;
+  }
+  let mr;
+  try {
+    const mime = pickAudioMime();
+    mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  } catch {
+    stream.getTracks().forEach((t) => t.stop());
+    $('rec-btn').disabled = false;
+    recError("This browser can't record audio. Type a description instead.");
+    return;
+  }
+  const r = { mr, stream, chunks: [], t0: Date.now() };
+  mr.ondataavailable = (e) => { if (e.data && e.data.size) r.chunks.push(e.data); };
+  r.done = new Promise((resolve) => { mr.onstop = () => { finishRecording(r); resolve(); }; });
+  mr.onerror = () => { recError('Recording failed. Try again.'); stopRecording(); };
+  stream.getAudioTracks().forEach((t) => { t.onended = () => stopRecording(); }); // mic taken away (call, unplugged)
+  rec = r;
+  mr.start();
+  r.cap = setTimeout(stopRecording, AUDIO_MAX_S * 1000);
+  r.tick = setInterval(() => { $('rec-time').textContent = fmtTime(Math.min(AUDIO_MAX_S, (Date.now() - r.t0) / 1000)); }, 200);
+  $('rec-time').textContent = '0:00';
+  $('rec-btn').hidden = true;
+  $('rec-btn').disabled = false;
+  $('rec-live').hidden = false;
+}
+
+function stopRecording() {
+  if (!rec) return Promise.resolve();
+  const r = rec;
+  if (r.mr.state !== 'inactive') r.mr.stop();
+  return r.done;
+}
+
+function finishRecording(r) {
+  clearInterval(r.tick);
+  clearTimeout(r.cap);
+  r.stream.getTracks().forEach((t) => t.stop()); // releases the mic indicator
+  if (rec === r) rec = null;
+  $('rec-live').hidden = true;
+  const seconds = Math.min(AUDIO_MAX_S, (Date.now() - r.t0) / 1000);
+  const type = r.mr.mimeType || (r.chunks[0] && r.chunks[0].type) || 'audio/webm';
+  const blob = new Blob(r.chunks, { type });
+  if (seconds < AUDIO_MIN_S || blob.size < 500) {
+    $('rec-btn').hidden = false;
+    recError('That was too short. Tap again and speak for a moment.');
+    return;
+  }
+  setAudio({ blob, duration_s: Math.round(seconds * 10) / 10, name: `voice.${audioExt(type)}` });
+}
+
 // ---------- form ----------
 function parseContact(raw) {
   const v = raw.trim();
@@ -306,9 +408,9 @@ function collectFields() {
     location_source: state.point ? state.source : 'address',
     address: typed || state.address || '',
     description: $('description').value.trim(),
-    category: state.category || '',
     contact: $('contact').value.trim(),
   };
+  if (state.audio) f.audio_duration_s = String(state.audio.duration_s);
   if (state.point) {
     f.lat = String(state.point.lat);
     f.lng = String(state.point.lng);
@@ -319,10 +421,11 @@ function collectFields() {
 
 class NetworkError extends Error {}
 
-async function postReport(fields, photo) {
+async function postReport(fields, photo, audio) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) if (v !== '' && v != null) fd.append(k, v);
   fd.append('photo', photo, 'photo.jpg');
+  if (audio) fd.append('audio', audio.blob, audio.name);
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 30000);
   let r;
@@ -353,6 +456,9 @@ async function onSend() {
   refresh();
   hideBanner();
 
+  // A recording still running when Send is tapped is finished first, so it is not lost.
+  if (rec) await stopRecording();
+
   if (!hasLocation() && state.locating) await state.locating;
   if (!hasLocation()) {
     state.sending = false;
@@ -366,12 +472,12 @@ async function onSend() {
   const fields = collectFields();
   try {
     if (navigator.onLine === false) throw new NetworkError('offline');
-    const res = await postReport(fields, state.photo);
+    const res = await postReport(fields, state.photo, state.audio);
     showDone(res.id, false);
   } catch (e) {
     if (e instanceof NetworkError) {
       // Same client_report_id is reused on resend, so the server never double-counts.
-      if (await enqueue(fields, state.photo)) showDone(null, true);
+      if (await enqueue(fields, state.photo, state.audio)) showDone(null, true);
       else showBanner("No connection, and this browser can't save the report. Try again when online.");
     } else {
       showBanner(`${e.message}. Your photo is kept — tap Retry.`);
@@ -393,9 +499,13 @@ function blobToDataUrl(blob) {
   });
 }
 
-async function enqueue(fields, photo) {
+async function enqueue(fields, photo, audio) {
   const q = lsGet(QUEUE_KEY, []);
-  q.push({ fields: { ...fields, queued: '1' }, photo: await blobToDataUrl(photo) });
+  q.push({
+    fields: { ...fields, queued: '1' },
+    photo: await blobToDataUrl(photo),
+    audio: audio ? { data: await blobToDataUrl(audio.blob), name: audio.name } : null,
+  });
   return lsSet(QUEUE_KEY, q);
 }
 
@@ -410,7 +520,8 @@ async function flushQueue() {
       const item = q[0];
       try {
         const blob = await (await fetch(item.photo)).blob();
-        await postReport(item.fields, blob);
+        const audio = item.audio ? { blob: await (await fetch(item.audio.data)).blob(), name: item.audio.name } : null;
+        await postReport(item.fields, blob, audio);
       } catch (e) {
         if (e instanceof NetworkError || e.status >= 500 || e.status === 429) break;
         // 4xx means the server will never accept it; drop rather than retry forever.
@@ -451,11 +562,11 @@ function showDone(id, queued) {
 
 function reset() {
   state.photo = null;
-  state.category = null;
+  setAudio(null);
+  recError('');
   $('preview').hidden = true;
   $('photo-card').classList.remove('has-photo');
   $('description').value = '';
-  document.querySelectorAll('#chips button').forEach((b) => b.setAttribute('aria-checked', 'false'));
   hideBanner();
   $('done-view').hidden = true;
   $('form-view').hidden = false;
@@ -476,13 +587,13 @@ $('address').addEventListener('input', () => {
   if (!state.point) setLoc($('address').value.trim() ? 'ok' : 'bad', 'Using the address you typed', '');
   refresh();
 });
-$('chips').addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-cat]');
-  if (!b) return;
-  const on = state.category !== b.dataset.cat;
-  state.category = on ? b.dataset.cat : null;
-  document.querySelectorAll('#chips button').forEach((x) => x.setAttribute('aria-checked', String(on && x === b)));
-});
+$('rec-btn').addEventListener('click', startRecording);
+$('rec-stop').addEventListener('click', stopRecording);
+$('rec-delete').addEventListener('click', () => { setAudio(null); recError(''); });
+// No mic API (old browser, or plain http): hide the recorder instead of showing a dead button.
+if (!window.isSecureContext || !window.MediaRecorder || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+  $('audio-box').hidden = true;
+}
 $('contact').addEventListener('input', () => { $('contact-err').hidden = true; });
 $('send-btn').addEventListener('click', onSend);
 $('again-btn').addEventListener('click', reset);

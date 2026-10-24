@@ -32,6 +32,7 @@ from .models import Report
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 REPORTS_FILE = DATA_DIR / "reports.jsonl"
 PHOTO_DIR = DATA_DIR / "photos"
+AUDIO_DIR = DATA_DIR / "audio"
 ADMIN_KEY = os.environ.get("ADMIN_KEY")
 
 app = FastAPI(title="Hackachussetts Reports API", version="1.0.0")
@@ -94,15 +95,29 @@ def get_report(report_id: str, key: Optional[str] = Query(default=None)) -> Repo
     return report
 
 
-@app.get("/api/reports/{report_id}/photo")
-def get_photo(report_id: str, key: Optional[str] = Query(default=None)) -> FileResponse:
+def _media_response(report_id: str, key: Optional[str], kind: str) -> FileResponse:
     require_key(key)
     report = find_report(report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="report not found")
-    # report.photo.path is like "photos/R-1001.jpg"; resolve under DATA_DIR and
-    # confirm it stays inside PHOTO_DIR so a crafted path can't escape.
-    photo_path = (DATA_DIR / report.photo.path).resolve()
-    if not str(photo_path).startswith(str(PHOTO_DIR.resolve()) + os.sep) or not photo_path.is_file():
-        raise HTTPException(status_code=404, detail="photo not found")
-    return FileResponse(photo_path, media_type=report.photo.mime)
+    media = report.photo if kind == "photo" else report.audio
+    if media is None:
+        raise HTTPException(status_code=404, detail=f"report has no {kind}")
+    # media.path is like "photos/R-1001.jpg"; resolve under DATA_DIR and confirm it
+    # stays inside the media folder so a crafted path can't escape.
+    root = (PHOTO_DIR if kind == "photo" else AUDIO_DIR).resolve()
+    file_path = (DATA_DIR / media.path).resolve()
+    if not str(file_path).startswith(str(root) + os.sep) or not file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"{kind} not found")
+    return FileResponse(file_path, media_type=media.mime)  # FileResponse serves HTTP Range, which Safari needs for audio
+
+
+@app.get("/api/reports/{report_id}/photo")
+def get_photo(report_id: str, key: Optional[str] = Query(default=None)) -> FileResponse:
+    return _media_response(report_id, key, "photo")
+
+
+@app.get("/api/reports/{report_id}/audio")
+def get_audio(report_id: str, key: Optional[str] = Query(default=None)) -> FileResponse:
+    """The optional voice note (up to 30 s). 404 when the reporter did not record one."""
+    return _media_response(report_id, key, "audio")
