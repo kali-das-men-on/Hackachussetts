@@ -9,6 +9,13 @@
   --ok: #138a43;
   --warn: #b35900;
   --bad: #c62828;
+  /* status colours: used by badges, progress dots and map markers */
+  --s-received: #6b7280;
+  --s-in_review: #2563eb;
+  --s-assigned: #7c3aed;
+  --s-in_progress: #d97706;
+  --s-resolved: #15803d;
+  --s-rejected: #9ca3af;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -136,8 +143,7 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 #send-bar {
   position: fixed; left: 0; right: 0; bottom: 0;
   padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--bg);
   border-top: 1px solid var(--line);
 }
 #send-btn {
@@ -154,3 +160,106 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .done h1 { margin: 8px 0; }
 .ref { font: 700 34px/1.2 ui-monospace, Menlo, monospace; margin: 8px 0; }
 .done .big-btn { margin-top: 28px; }
+
+/* ---------- tabs ---------- */
+.tabs {
+  position: sticky; top: 0; z-index: 1000;
+  display: flex; gap: 4px; max-width: 520px; margin: 0 auto;
+  padding: calc(8px + env(safe-area-inset-top)) 16px 8px;
+  background: var(--bg);
+}
+.tab {
+  flex: 1; min-height: 44px; display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--card);
+  color: var(--text); text-decoration: none; font-weight: 600; font-size: 16px;
+}
+.tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+#track-link { text-decoration: none; }
+
+/* ---------- issues panel ---------- */
+.small { font-size: 13px; }
+.lookup-row { margin-top: 2px; }
+.lookup-row input { flex: 1; min-width: 0; }
+.lookup-row .chip-btn { margin-top: 10px; }
+#lookup-results .issue { margin: 10px 0 0; background: var(--bg); }
+
+.seg { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 3px; }
+.seg-btn {
+  flex: 1; min-height: 40px; border: 0; border-radius: 9px; background: none;
+  color: var(--text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.seg-btn.active { background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / 0.15); }
+.chips { display: flex; gap: 8px; margin-top: 10px; }
+.chip {
+  min-height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.chip.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.board-status { margin-top: 10px; }
+#board-map { height: 220px; margin-top: 10px; border-radius: 12px; overflow: hidden; }
+
+.issue { padding: 0; overflow: hidden; }
+.issue summary { display: flex; gap: 12px; padding: 12px; cursor: pointer; list-style: none; }
+.issue summary::-webkit-details-marker { display: none; }
+.issue .thumb { width: 76px; height: 76px; flex: none; object-fit: cover; border-radius: 10px; background: var(--line); }
+.issue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 15px; }
+.issue-desc { margin: 2px 0; overflow-wrap: anywhere; }
+.issue-more { padding: 0 12px 12px; border-top: 1px solid var(--line); }
+.issue-more .full { display: block; width: 100%; max-height: 50vh; object-fit: cover; border-radius: 10px; }
+
+.badge {
+  flex: none; padding: 2px 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; color: #fff; white-space: nowrap;
+}
+.s-received.badge { background: var(--s-received); }
+.s-in_review.badge { background: var(--s-in_review); }
+.s-assigned.badge { background: var(--s-assigned); }
+.s-in_progress.badge { background: var(--s-in_progress); }
+.s-resolved.badge { background: var(--s-resolved); }
+.s-rejected.badge { background: var(--s-rejected); }
+
+.steps { display: flex; gap: 4px; margin-top: 8px; }
+.step { flex: 1; height: 5px; border-radius: 3px; background: var(--line); }
+.step.on { background: var(--s-in_progress); }
+.steps.fixed .step.on { background: var(--s-resolved); }
+.steps.closed .step.on { background: var(--s-rejected); }
+
+.timeline { list-style: none; margin: 12px 0 0; padding: 0 0 0 16px; border-left: 2px solid var(--line); font-size: 15px; }
+.timeline li { position: relative; margin-bottom: 10px; }
+.timeline li::before {
+  content: ''; position: absolute; left: -23px; top: 5px;
+  width: 12px; height: 12px; border-radius: 50%; background: var(--s-received);
+}
+.timeline li.s-in_review::before { background: var(--s-in_review); }
+.timeline li.s-assigned::before { background: var(--s-assigned); }
+.timeline li.s-in_progress::before { background: var(--s-in_progress); }
+.timeline li.s-resolved::before { background: var(--s-resolved); }
+.timeline li.s-rejected::before { background: var(--s-rejected); }
+
+/* ---------- typed address ---------- */
+.addr-row { display: flex; gap: 8px; align-items: flex-end; }
+.addr-wrap { position: relative; flex: 1; min-width: 0; }
+.addr-suggest {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 1100; /* above the Leaflet map (z 400-1000) */
+  list-style: none; margin: 4px 0 0; padding: 4px 0;
+  max-height: 50vh; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+}
+.addr-suggest li { padding: 9px 12px; min-height: 44px; cursor: pointer; font-size: 15px; line-height: 1.3; }
+.addr-suggest li + li { border-top: 1px solid var(--line); }
+.addr-suggest li[aria-selected="true"], .addr-suggest li:hover { background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
+.addr-row .chip-btn { flex: none; }
+.addr-row .chip-btn:disabled { opacity: 0.6; }
+.addr-msg { margin-top: 6px; }
+.addr-results { list-style: none; margin: 6px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.addr-results li + li { border-top: 1px solid var(--line); }
+.addr-results button {
+  display: block; width: 100%; min-height: 44px; padding: 10px 12px;
+  background: var(--card); color: var(--text); border: 0; text-align: left;
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.addr-results button.picked { font-weight: 600; }
+/* Off-screen cards skip layout and paint until scrolled near. */
+#board-list .issue { content-visibility: auto; contain-intrinsic-size: auto 150px; }

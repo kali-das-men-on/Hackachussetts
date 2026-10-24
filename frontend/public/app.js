@@ -125,7 +125,9 @@ function getPosition(opts) {
 
 // Only call this while the page is visible: a prompt raised while the camera covers
 // the page gets dismissed, and Safari/Chrome then report it as "denied".
-function locate() {
+// force: the user tapped "Use my location", so the fix replaces a typed address or map pin.
+function locate(force = false) {
+  if (force) state.forceGps = true;
   if (state.locating) return state.locating;
   if (!window.isSecureContext || !('geolocation' in navigator)) {
     locationFailed(0);
@@ -144,24 +146,34 @@ function locate() {
         // No GPS fix in time (indoors, GPS off): a Wi-Fi/cell estimate is better than nothing.
         pos = await getPosition({ enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: 300000 });
       }
-      // A map pin the user placed meanwhile beats a late fix.
-      if (state.source !== 'map') setPoint(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, 'gps');
+      // Without a tap on "Use my location", a pin the user placed or an address they
+      // looked up meanwhile beats a late fix.
+      if (state.forceGps || (state.source !== 'map' && state.source !== 'address')) {
+        lastSearched = '';
+        if (document.activeElement === $('address')) $('address').blur();
+        $('addr-results').hidden = true;
+        addrMsg('');
+        setPoint(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, 'gps');
+      } else {
+        showPlaced(); // put back the status line that "Finding your location…" replaced
+      }
     } catch (e) {
-      locationFailed(e.code);
+      locationFailed(e.code, state.forceGps);
     }
-  })().finally(() => { state.locating = null; });
+  })().finally(() => { state.locating = null; state.forceGps = false; });
   return state.locating;
 }
 
 // code: 1 = permission denied, 2/3 = no fix / timeout, 0 = not supported here
-function locationFailed(code) {
-  if (state.point) return;
+// forced: the user asked for their location; tell them it failed even if a pin is already set.
+function locationFailed(code, forced = false) {
+  if (state.point && !forced) { showPlaced(); return; }
   const msg = code === 1 ? 'Location is blocked for this site.'
     : code === 0 ? 'Location is not available in this browser.'
     : "Couldn't get a location fix.";
-  setLoc('bad', msg, 'Type an address or pick on the map instead.');
+  setLoc('bad', msg, state.point ? 'The pin stays where it was. Drag it, or type an address and tap Find.'
+    : 'Type an address above and tap Find, or pick on the map.');
   showLocationHelp(code === 1 || code === 0);
-  $('loc-manual').hidden = false;
   $('loc-btn').hidden = false;
   $('loc-btn').classList.remove('primary');
   $('loc-btn').textContent = 'Try again';
@@ -169,50 +181,295 @@ function locationFailed(code) {
   refresh();
 }
 
-function setPoint(lat, lng, accuracy, source) {
+// "Use my location" stays available whenever the pin came from a typed address or the map,
+// so the user can always switch back to where they are standing.
+function showLocButton() {
+  const btn = $('loc-btn');
+  btn.hidden = state.source === 'gps';
+  btn.classList.remove('primary');
+  btn.textContent = 'Use my location';
+}
+
+// The status line for the current pin, e.g. after a background GPS attempt was ignored.
+function showPlaced() {
+  if (!state.point) return;
+  setLoc('ok', state.source === 'map' ? 'Pin placed on map' : 'Address found. Drag the pin if it is off.', state.address);
+  showLocButton();
+}
+
+// source: 'gps' (device fix), 'map' (user moved the pin) or 'address' (typed address, geocoded).
+// label: the address text to show, when the caller already knows it (typed address).
+function setPoint(lat, lng, accuracy, source, label = null) {
   state.point = { lat, lng, accuracy_m: accuracy ?? null };
   state.source = source;
   showLocationHelp(false);
-  $('loc-manual').hidden = true;
   const acc = accuracy ? ` · ±${Math.round(accuracy)} m` : '';
   // iOS "Precise Location" off or Wi-Fi-only fixes can be kilometres off.
   const rough = source === 'gps' && accuracy > 300;
   setLoc(rough ? 'busy' : 'ok',
-    source === 'map' ? 'Pin placed on map' : rough ? 'Approximate location' + acc + ' — tap Adjust on map' : 'Location found' + acc,
-    `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+    source === 'map' ? 'Pin placed on map'
+      : source === 'address' ? 'Address found. Drag the pin if it is off.'
+      : rough ? 'Approximate location' + acc + ' — tap Adjust on map' : 'Location found' + acc,
+    label || `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
   $('map-btn').textContent = 'Adjust on map';
+  showLocButton();
   if (marker) {
     marker.setLatLng([lat, lng]);
     if (map && source !== 'map') map.setView([lat, lng], 18);
   } else if (source !== 'map') {
     // Show the map automatically so the user can see and confirm the spot,
-    // even when the location came from GPS without them asking.
+    // even when the location came from GPS or a typed address.
     openMap();
   }
-  reverseGeocode(lat, lng);
+  if (label) {
+    geocodeSeq++; // a slower reverse lookup for an older pin must not overwrite this
+    setAddress(label);
+  } else {
+    reverseGeocode(lat, lng);
+  }
   refresh();
+}
+
+// The address box always shows the address of the pin, except while the user is typing in it.
+function setAddress(line) {
+  state.address = line.slice(0, 300);
+  $('loc-detail').textContent = state.address;
+  if (document.activeElement !== $('address')) $('address').value = state.address;
+}
+
+function addressLine(j) {
+  const a = j.address || {};
+  return [[a.house_number, a.road].filter(Boolean).join(' ') || a.amenity || a.building || j.name,
+    a.city || a.town || a.village || a.suburb]
+    .filter(Boolean).join(', ') || j.display_name || '';
+}
+
+function nominatim(pathAndQuery) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 6000);
+  return fetch(`https://nominatim.openstreetmap.org/${pathAndQuery}&accept-language=${encodeURIComponent(navigator.language || 'en')}`,
+    { signal: ctl.signal })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .finally(() => clearTimeout(t));
 }
 
 let geocodeSeq = 0;
 async function reverseGeocode(lat, lng) {
   const seq = ++geocodeSeq;
   try {
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 5000);
-    const r = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`,
-      { signal: ctl.signal, headers: { 'Accept-Language': navigator.language || 'en' } });
-    clearTimeout(t);
-    if (!r.ok || seq !== geocodeSeq) return;
-    const j = await r.json();
-    const a = j.address || {};
-    const line = [[a.house_number, a.road].filter(Boolean).join(' '), a.city || a.town || a.village || a.suburb]
-      .filter(Boolean).join(', ') || j.display_name;
-    if (line && seq === geocodeSeq) {
-      state.address = line.slice(0, 300);
-      $('loc-detail').textContent = state.address;
-    }
+    const j = await nominatim(`reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`);
+    const line = addressLine(j);
+    if (line && seq === geocodeSeq) setAddress(line);
   } catch { /* address is a nice-to-have; coordinates are enough */ }
+}
+
+// ---------- typed address -> map pin (Nominatim search) ----------
+// Nominatim's usage policy forbids search-as-you-type, so this runs on Find / Enter / leaving the field.
+let searchSeq = 0;
+let lastSearched = '';
+
+function addrMsg(text) {
+  $('addr-msg').textContent = text || '';
+  $('addr-msg').hidden = !text;
+}
+
+let searching = null; // Promise while a lookup is in flight
+function searchAddress() {
+  // Find + leaving the field can both fire; queue them so Send can wait on the last one.
+  const p = (searching || Promise.resolve()).then(doSearchAddress).finally(() => {
+    if (searching === p) searching = null;
+  });
+  searching = p;
+  return p;
+}
+
+async function doSearchAddress() {
+  const q = $('address').value.trim();
+  $('addr-results').hidden = true;
+  if (q.length < 3 || q === lastSearched || q === state.address) return;
+  lastSearched = q;
+  const seq = ++searchSeq;
+  $('addr-btn').disabled = true;
+  addrMsg('Searching…');
+  // Prefer results near where the user is (or the last pin); results elsewhere are still allowed.
+  const c = state.point || { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
+  const box = [c.lng - 0.3, c.lat + 0.3, c.lng + 0.3, c.lat - 0.3].map((v) => v.toFixed(4)).join(',');
+  let results;
+  try {
+    results = await nominatim(`search?format=jsonv2&addressdetails=1&limit=5&viewbox=${box}&q=${encodeURIComponent(q)}`);
+  } catch {
+    if (seq === searchSeq) {
+      lastSearched = '';
+      addrMsg(navigator.onLine === false ? "You're offline. The typed address will still be sent." : "Couldn't look up that address. It will still be sent as typed.");
+    }
+    return;
+  } finally {
+    if (seq === searchSeq) $('addr-btn').disabled = false;
+  }
+  if (seq !== searchSeq) return;
+  if (!results.length) {
+    addrMsg("Couldn't find that on the map. It will be sent as typed. You can also tap the map.");
+    return;
+  }
+  addrMsg('');
+  const pick = (r) => {
+    const line = addressLine(r);
+    lastSearched = line;
+    $('address').value = line;
+    setPoint(Number(r.lat), Number(r.lon), null, 'address', line);
+  };
+  pick(results[0]);
+  if (results.length > 1) {
+    // Show the other matches in case the first guess was the wrong "Main St".
+    const items = results.map((r, i) => {
+      const li = document.createElement('li');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = r.display_name;
+      if (i === 0) b.className = 'picked';
+      b.addEventListener('click', () => {
+        $('addr-results').querySelectorAll('button').forEach((x) => x.classList.toggle('picked', x === b));
+        pick(r);
+      });
+      li.append(b);
+      return li;
+    });
+    $('addr-results').replaceChildren(...items);
+    $('addr-results').hidden = false;
+  }
+}
+
+// ---------- address suggestions while typing (Photon) ----------
+// Photon (photon.komoot.io) is an OpenStreetMap geocoder made for search-as-you-type,
+// which Nominatim's policy does not allow. Requests are debounced and the previous one
+// is cancelled, so fast typing sends about one request per pause.
+const SUGGEST_MIN = 3;
+const SUGGEST_DELAY_MS = 300;
+const sug = { timer: null, ctl: null, items: [], active: -1, cache: new Map() };
+
+function photonLine(p) {
+  const street = [p.housenumber, p.street].filter(Boolean).join(' ');
+  const town = p.city || p.town || p.village || p.district || p.county;
+  // Named places (a park, a library) lead with the name; plain addresses with the street.
+  const head = p.name && p.name !== p.street ? p.name : null;
+  return [head, street || (head ? null : p.name), town].filter(Boolean).join(', ');
+}
+
+function photonDetail(p) {
+  return [p.state, p.countrycode && p.countrycode.toUpperCase()].filter(Boolean).join(', ');
+}
+
+async function photon(q, bbox, signal) {
+  const c = state.point || { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
+  const params = new URLSearchParams({ q, limit: '6', lat: c.lat.toFixed(4), lon: c.lng.toFixed(4) });
+  const lang = (navigator.language || 'en').slice(0, 2);
+  if (['en', 'de', 'fr', 'it'].includes(lang)) params.set('lang', lang); // the languages Photon supports
+  if (bbox) params.set('bbox', [c.lng - 0.4, c.lat - 0.4, c.lng + 0.4, c.lat + 0.4].map((v) => v.toFixed(4)).join(','));
+  const r = await fetch('https://photon.komoot.io/api/?' + params, { signal });
+  if (!r.ok) throw new Error(String(r.status));
+  const j = await r.json();
+  const seen = new Set();
+  return (j.features || []).map((f) => ({
+    line: photonLine(f.properties),
+    detail: photonDetail(f.properties),
+    lat: f.geometry.coordinates[1],
+    lng: f.geometry.coordinates[0],
+  })).filter((s) => s.line && !seen.has(s.line) && seen.add(s.line));
+}
+
+function closeSuggestions() {
+  clearTimeout(sug.timer);
+  if (sug.ctl) sug.ctl.abort();
+  sug.items = [];
+  sug.active = -1;
+  $('addr-suggest').hidden = true;
+  $('address').setAttribute('aria-expanded', 'false');
+  $('address').removeAttribute('aria-activedescendant');
+}
+
+function renderSuggestions() {
+  const list = $('addr-suggest');
+  if (!sug.items.length) { closeSuggestions(); return; }
+  list.replaceChildren(...sug.items.map((s, i) => {
+    const li = document.createElement('li');
+    li.id = 'addr-opt-' + i;
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', String(i === sug.active));
+    const main = document.createElement('div');
+    main.textContent = s.line;
+    const sub = document.createElement('div');
+    sub.className = 'muted small';
+    sub.textContent = s.detail;
+    li.append(main, sub);
+    // pointerdown + preventDefault keeps focus in the box, so its "change" lookup doesn't race the pick.
+    li.addEventListener('pointerdown', (e) => { e.preventDefault(); pickSuggestion(i); });
+    return li;
+  }));
+  list.hidden = false;
+  $('address').setAttribute('aria-expanded', 'true');
+  if (sug.active >= 0) $('address').setAttribute('aria-activedescendant', 'addr-opt-' + sug.active);
+  else $('address').removeAttribute('aria-activedescendant');
+}
+
+function pickSuggestion(i) {
+  const s = sug.items[i];
+  if (!s) return;
+  closeSuggestions();
+  lastSearched = s.line; // so the Find / blur lookup does not run again for it
+  $('address').value = s.line;
+  $('addr-results').hidden = true;
+  addrMsg('');
+  $('address').blur(); // closes the phone keyboard so the map is visible
+  setPoint(s.lat, s.lng, null, 'address', s.line);
+}
+
+function scheduleSuggestions() {
+  clearTimeout(sug.timer);
+  const q = $('address').value.trim();
+  if (q.length < SUGGEST_MIN) { closeSuggestions(); return; }
+  sug.timer = setTimeout(() => loadSuggestions(q), SUGGEST_DELAY_MS);
+}
+
+async function loadSuggestions(q) {
+  if (sug.ctl) sug.ctl.abort();
+  const ctl = new AbortController();
+  sug.ctl = ctl;
+  const t = setTimeout(() => ctl.abort(), 5000);
+  const key = q.toLowerCase() + '|' + (state.point ? state.point.lat.toFixed(2) + ',' + state.point.lng.toFixed(2) : '');
+  try {
+    let items = sug.cache.get(key);
+    if (!items) {
+      items = await photon(q, true, ctl.signal);
+      if (!items.length) items = await photon(q, false, ctl.signal); // nothing nearby: search everywhere
+      sug.cache.set(key, items);
+      if (sug.cache.size > 50) sug.cache.delete(sug.cache.keys().next().value);
+    }
+    // Only show them if the box still holds this text and still has focus.
+    if (ctl.signal.aborted || $('address').value.trim() !== q || document.activeElement !== $('address')) return;
+    sug.items = items;
+    sug.active = -1;
+    renderSuggestions();
+  } catch {
+    // Suggestions are optional; Find still works with the typed text.
+  } finally {
+    clearTimeout(t);
+    if (sug.ctl === ctl) sug.ctl = null;
+  }
+}
+
+function onAddressKey(e) {
+  if ($('addr-suggest').hidden || !sug.items.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const n = sug.items.length;
+    sug.active = e.key === 'ArrowDown' ? (sug.active + 1) % n : (sug.active - 1 + n) % n;
+    renderSuggestions();
+  } else if (e.key === 'Enter' && sug.active >= 0) {
+    e.preventDefault(); // pick the highlighted suggestion instead of submitting the form
+    pickSuggestion(sug.active);
+  } else if (e.key === 'Escape') {
+    closeSuggestions();
+  }
 }
 
 // ---------- map (Leaflet, loaded only when asked for) ----------
@@ -247,7 +504,6 @@ async function openMap() {
     mapOpening = false;
     $('map').hidden = true;
     $('map-btn').hidden = false;
-    $('loc-manual').hidden = false;
     showBanner("Map couldn't load. Type an address instead.");
     return;
   }
@@ -258,8 +514,8 @@ async function openMap() {
     return;
   }
   const start = state.point ? [state.point.lat, state.point.lng] : DEFAULT_CENTER;
-  map = L.map('map', { zoomControl: true }).setView(start, state.point ? 18 : 13);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  map = L.map('map', { zoomControl: true, preferCanvas: true }).setView(start, state.point ? 18 : 13);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; OpenStreetMap',
   }).addTo(map);
   marker = L.marker(start, { draggable: true }).addTo(map);
@@ -459,6 +715,8 @@ async function onSend() {
   // A recording still running when Send is tapped is finished first, so it is not lost.
   if (rec) await stopRecording();
 
+  // Tapping Send blurs the address box, which starts a lookup; let it place the pin first.
+  if (searching) await searching;
   if (!hasLocation() && state.locating) await state.locating;
   if (!hasLocation()) {
     state.sending = false;
@@ -557,6 +815,8 @@ function showDone(id, queued) {
     ? "You're offline. We'll send it automatically when you're back online — keep this page open or come back later."
     : 'Thanks! Keep this reference number if you contact the town.';
   lsSet('last_contact', $('contact').value.trim());
+  $('track-link').hidden = queued;
+  $('track-link').textContent = $('contact').value.trim() ? 'Track its status' : 'See issues near you';
   window.scrollTo(0, 0);
 }
 
@@ -580,13 +840,26 @@ function reset() {
 // ---------- wiring ----------
 $('photo-camera').addEventListener('change', onPhotoPicked);
 $('photo-library').addEventListener('change', onPhotoPicked);
-$('loc-btn').addEventListener('click', () => locate());
+$('loc-btn').addEventListener('click', () => locate(true));
 $('reload-btn').addEventListener('click', () => location.reload());
 $('map-btn').addEventListener('click', openMap);
 $('address').addEventListener('input', () => {
-  if (!state.point) setLoc($('address').value.trim() ? 'ok' : 'bad', 'Using the address you typed', '');
+  $('addr-results').hidden = true;
+  addrMsg('');
+  if (!state.point) setLoc($('address').value.trim() ? 'ok' : 'bad', 'Using the address you typed', 'Pick a suggestion or tap Find to show it on the map.');
+  scheduleSuggestions();
   refresh();
 });
+$('address').addEventListener('keydown', onAddressKey);
+$('address').addEventListener('blur', () => setTimeout(closeSuggestions, 0));
+$('addr-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  closeSuggestions();
+  $('address').blur(); // closes the phone keyboard so the map is visible
+  searchAddress();
+});
+// Leaving the field after editing it also looks the address up (covers users who never tap Find).
+$('address').addEventListener('change', () => searchAddress());
 $('rec-btn').addEventListener('click', startRecording);
 $('rec-stop').addEventListener('click', stopRecording);
 $('rec-delete').addEventListener('click', () => { setAudio(null); recError(''); });

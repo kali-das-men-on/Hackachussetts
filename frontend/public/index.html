@@ -7,8 +7,19 @@
   <title>Report an Issue</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
+  <!-- The map library and tiles load on most visits; open the connections early. -->
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="preconnect" href="https://tile.openstreetmap.org">
+  <link rel="preconnect" href="https://nominatim.openstreetmap.org" crossorigin>
+  <link rel="preconnect" href="https://photon.komoot.io" crossorigin>
 </head>
 <body>
+  <nav class="tabs" role="tablist">
+    <a href="#report" role="tab" id="tab-report" class="tab active" aria-selected="true">Report an issue</a>
+    <a href="#issues" role="tab" id="tab-issues" class="tab" aria-selected="false">Issues near me</a>
+  </nav>
+
+  <div id="panel-report" role="tabpanel">
   <main id="form-view">
     <header>
       <h1>Report an issue</h1>
@@ -46,9 +57,19 @@
         <ol id="loc-help-steps"></ol>
         <button type="button" class="chip-btn" id="reload-btn">Reload page</button>
       </div>
-      <div id="loc-manual" hidden>
-        <input type="text" id="address" placeholder="Type an address or nearby landmark" autocomplete="street-address" maxlength="300">
-      </div>
+      <!-- Always available: typing an address and tapping Find moves the map pin there. -->
+      <form id="addr-form" class="addr-row" autocomplete="off">
+        <div class="addr-wrap">
+          <!-- autocomplete=off: the browser's own address dropdown would cover ours -->
+          <input type="text" id="address" placeholder="Or type an address or landmark" autocomplete="off"
+                 maxlength="300" enterkeyhint="search" aria-label="Address or landmark"
+                 role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="addr-suggest">
+          <ul id="addr-suggest" class="addr-suggest" role="listbox" aria-label="Suggested addresses" hidden></ul>
+        </div>
+        <button type="submit" class="chip-btn" id="addr-btn">Find</button>
+      </form>
+      <ul id="addr-results" class="addr-results" hidden></ul>
+      <div id="addr-msg" class="muted addr-msg" hidden></div>
       <button type="button" class="link" id="map-btn">Adjust on map</button>
       <div id="map" hidden></div>
       <div id="map-hint" class="muted map-hint" hidden>Is the pin right? Drag it or tap the map to correct the spot.</div>
@@ -98,9 +119,49 @@
       <p id="done-ref" class="ref"></p>
       <p id="done-msg" class="muted"></p>
       <button type="button" class="big-btn" id="again-btn"><span>Report another</span></button>
+      <a href="#issues" class="link" id="track-link">Track its status</a>
     </div>
   </main>
+  </div>
 
-  <script src="app.js"></script>
+  <div id="panel-issues" role="tabpanel" hidden>
+  <main id="issues-view">
+    <header>
+      <h1>Issues near me</h1>
+      <p class="sub">See what's been reported and how far along the town is.</p>
+    </header>
+
+    <!-- My reports, by the email or phone given on the report -->
+    <section class="card">
+      <b>Check my reports</b>
+      <form id="lookup-form" class="row lookup-row">
+        <input type="text" id="lookup-contact" inputmode="email" autocomplete="email" maxlength="254"
+               placeholder="Email or phone you used" aria-label="Email or phone you used on the report">
+        <button type="submit" class="chip-btn primary" id="lookup-btn">Check</button>
+      </form>
+      <div id="lookup-err" class="err" hidden></div>
+      <div id="lookup-results"></div>
+    </section>
+
+    <!-- Public board: never shows anyone's contact details -->
+    <section class="card">
+      <div class="seg" role="group" aria-label="Sort">
+        <button type="button" class="seg-btn active" data-mode="nearby">Nearby</button>
+        <button type="button" class="seg-btn" data-mode="recent">Recent</button>
+      </div>
+      <div class="chips" role="group" aria-label="Filter by status">
+        <button type="button" class="chip active" data-status="all">All</button>
+        <button type="button" class="chip" data-status="open">Open</button>
+        <button type="button" class="chip" data-status="resolved">Fixed</button>
+      </div>
+      <div id="board-status" class="muted board-status"></div>
+      <div id="board-map" hidden></div>
+    </section>
+    <div id="board-list"></div>
+  </main>
+  </div>
+
+  <script src="app.js" defer></script>
+  <script src="issues.js" defer></script>
 </body>
 </html>

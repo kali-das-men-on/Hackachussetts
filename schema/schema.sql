@@ -8,7 +8,9 @@ CREATE TABLE reports (
     created_at          TIMESTAMPTZ NOT NULL,
     submitted_at        TIMESTAMPTZ,
     status              TEXT NOT NULL DEFAULT 'received'
-                        CHECK (status IN ('received','in_review','assigned','resolved','rejected')),
+                        CHECK (status IN ('received','in_review','assigned','in_progress','resolved','rejected')),
+    updated_at          TIMESTAMPTZ,                   -- last status change
+    status_history      JSONB NOT NULL DEFAULT '[]',   -- [{status, at, note}], oldest first; TEXT on SQLite
 
     photo_path          TEXT NOT NULL,                 -- or an object-store key later
     photo_mime          TEXT NOT NULL,

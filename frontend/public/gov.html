@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Town staff dashboard</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="gov.css">
+</head>
+<body>
+
+<section id="login" class="login" hidden>
+  <form id="login-form" class="card">
+    <h1>Town staff sign in</h1>
+    <p class="muted">Issue reports dashboard. Demo accounts only.</p>
+    <label>Government ID <input id="gov-id" name="id" autocomplete="username" placeholder="AMH-DPW-1001" required></label>
+    <label>PIN <input id="gov-pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" required></label>
+    <button>Sign in</button>
+    <p id="login-error" class="error" role="alert"></p>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <header class="top">
+    <b>Issue reports</b>
+    <span id="counts" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="show-criteria" class="link">Criteria</button>
+    <span id="who"></span>
+    <button id="logout" class="link">Sign out</button>
+  </header>
+
+  <div class="filters">
+    <div class="seg" role="group" aria-label="Status">
+      <button data-status="open" class="on">Open</button>
+      <button data-status="closed">Closed</button>
+      <button data-status="all">All</button>
+    </div>
+    <label><input type="checkbox" id="mine"> <span id="mine-label">My department</span></label>
+    <input id="search" type="search" placeholder="Search id, address, text">
+  </div>
+
+  <main class="panels">
+    <section class="list-panel" aria-label="Ranked reports">
+      <p class="hint muted">Ranked by AI: severity, days open, past target. Click a report for details.</p>
+      <ol id="list"></ol>
+    </section>
+    <section class="map-panel" aria-label="Map">
+      <div id="map"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="criteria">
+  <form method="dialog"><button class="close" aria-label="Close">×</button></form>
+  <div id="criteria-body"></div>
+</dialog>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="gov-app.js"></script>
+</body>
+</html>
