@@ -261,7 +261,7 @@ const server = http.createServer(async (req, res) => {
     const rel = p === '/' ? 'index.html' : path.normalize(p).replace(/^[/\\]+/, '');
     const file = path.join(PUBLIC_DIR, rel);
     if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 404, 'Not found');
-    serveFile(res, file, rel === 'index.html' ? 'no-cache' : 'public, max-age=300');
+    serveFile(res, file, 'no-cache');
   } catch (e) {
     console.error(e);
     if (!res.headersSent) send(res, 500, { error: 'server error' });

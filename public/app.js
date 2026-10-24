@@ -69,6 +69,8 @@ async function onPhotoPicked(e) {
   $('photo-card').classList.add('has-photo');
   hideBanner();
   refresh();
+  // The page is visible again now, so the permission prompt can actually be seen.
+  if (!state.point) locate();
 }
 
 // ---------- location ----------
@@ -78,33 +80,85 @@ function setLoc(kind, status, detail = '') {
   $('loc-detail').textContent = detail;
 }
 
+const UA = navigator.userAgent;
+const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IN_APP = /FBAN|FBAV|Instagram|Line\/|MicroMessenger|Snapchat|TikTok|LinkedInApp/i.test(UA);
+
+// Steps to un-block location, worded for the browser the user is actually in.
+function locationHelpSteps() {
+  if (IN_APP) {
+    return ['This in-app browser blocks location.', 'Open the ⋯ menu and choose "Open in Safari" / "Open in Chrome".'];
+  }
+  if (IS_IOS) {
+    const app = /CriOS/.test(UA) ? 'Chrome' : /FxiOS/.test(UA) ? 'Firefox' : /EdgiOS/.test(UA) ? 'Edge' : null;
+    if (app) {
+      return [`iPhone Settings → Privacy & Security → Location Services → On.`,
+        `Same screen → ${app} → "While Using the App".`, 'Come back and reload this page.'];
+    }
+    return ['iPhone Settings → Privacy & Security → Location Services → On.',
+      'Same screen → Safari Websites → "While Using the App".',
+      'In Safari, tap the page menu (aA, left of the address) → Website Settings → Location → Allow.',
+      'Come back and reload this page.'];
+  }
+  if (/Android/.test(UA)) {
+    const app = /SamsungBrowser/.test(UA) ? 'Samsung Internet' : /Firefox/.test(UA) ? 'Firefox' : 'Chrome';
+    return ['Tap the icon left of the address bar → Permissions → Location → Allow.',
+      `Still blocked? Android Settings → Location → On, and Settings → Apps → ${app} → Permissions → Location → Allow.`,
+      'Reload this page.'];
+  }
+  return ['Click the icon left of the address bar → Location → Allow, then reload.'];
+}
+
+function showLocationHelp(show) {
+  const box = $('loc-help');
+  box.hidden = !show;
+  if (!show) return;
+  const ol = $('loc-help-steps');
+  ol.replaceChildren(...locationHelpSteps().map((s) => Object.assign(document.createElement('li'), { textContent: s })));
+}
+
+function getPosition(opts) {
+  return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, opts));
+}
+
+// Only call this while the page is visible: a prompt raised while the camera covers
+// the page gets dismissed, and Safari/Chrome then report it as "denied".
 function locate() {
   if (state.locating) return state.locating;
-  if (!('geolocation' in navigator)) { locationFailed('Location not available on this device.'); return Promise.resolve(); }
+  if (!window.isSecureContext || !('geolocation' in navigator)) {
+    locationFailed(0);
+    return Promise.resolve();
+  }
   setLoc('busy', 'Finding your location…');
   $('loc-btn').hidden = true;
-  state.locating = new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        // A later map pin beats a GPS fix that arrives late.
-        if (state.source !== 'map') {
-          setPoint(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, 'gps');
-        }
-        resolve();
-      },
-      (err) => {
-        locationFailed(err.code === 1 ? 'Location permission denied.' : "Couldn't get your location.");
-        resolve();
-      },
-      { enableHighAccuracy: true, timeout: GEO_TIMEOUT_MS, maximumAge: 60000 },
-    );
-  }).finally(() => { state.locating = null; });
+  showLocationHelp(false);
+  state.locating = (async () => {
+    try {
+      let pos;
+      try {
+        pos = await getPosition({ enableHighAccuracy: true, timeout: GEO_TIMEOUT_MS, maximumAge: 30000 });
+      } catch (e) {
+        if (e.code === 1) throw e;
+        // No GPS fix in time (indoors, GPS off): a Wi-Fi/cell estimate is better than nothing.
+        pos = await getPosition({ enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: 300000 });
+      }
+      // A map pin the user placed meanwhile beats a late fix.
+      if (state.source !== 'map') setPoint(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, 'gps');
+    } catch (e) {
+      locationFailed(e.code);
+    }
+  })().finally(() => { state.locating = null; });
   return state.locating;
 }
 
-function locationFailed(msg) {
+// code: 1 = permission denied, 2/3 = no fix / timeout, 0 = not supported here
+function locationFailed(code) {
   if (state.point) return;
-  setLoc('bad', msg, 'Type an address or drop a pin on the map.');
+  const msg = code === 1 ? 'Location is blocked for this site.'
+    : code === 0 ? 'Location is not available in this browser.'
+    : "Couldn't get a location fix.";
+  setLoc('bad', msg, 'Type an address or pick on the map instead.');
+  showLocationHelp(code === 1 || code === 0);
   $('loc-manual').hidden = false;
   $('loc-btn').hidden = false;
   $('loc-btn').textContent = 'Try again';
@@ -115,8 +169,13 @@ function locationFailed(msg) {
 function setPoint(lat, lng, accuracy, source) {
   state.point = { lat, lng, accuracy_m: accuracy ?? null };
   state.source = source;
+  showLocationHelp(false);
+  $('loc-manual').hidden = true;
   const acc = accuracy ? ` · ±${Math.round(accuracy)} m` : '';
-  setLoc('ok', source === 'map' ? 'Pin placed on map' : 'Location found' + acc,
+  // iOS "Precise Location" off or Wi-Fi-only fixes can be kilometres off.
+  const rough = source === 'gps' && accuracy > 300;
+  setLoc(rough ? 'busy' : 'ok',
+    source === 'map' ? 'Pin placed on map' : rough ? 'Approximate location' + acc + ' — tap Adjust on map' : 'Location found' + acc,
     `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
   $('map-btn').textContent = 'Adjust on map';
   if (marker) { marker.setLatLng([lat, lng]); }
@@ -278,7 +337,7 @@ async function onSend() {
   if (!hasLocation()) {
     state.sending = false;
     refresh();
-    locationFailed($('loc-status').textContent || 'Need a location.');
+    locationFailed(2);
     showBanner('Add where this is: type an address or pick on the map.', true);
     $('address').focus();
     return;
@@ -390,10 +449,8 @@ function reset() {
 // ---------- wiring ----------
 $('photo-camera').addEventListener('change', onPhotoPicked);
 $('photo-library').addEventListener('change', onPhotoPicked);
-// Ask for location on the same tap that opens the camera, so the fix arrives while the user shoots.
-$('take-btn').addEventListener('click', () => { if (!state.point) locate(); });
-$('library-link').addEventListener('click', () => { if (!state.point) locate(); });
 $('loc-btn').addEventListener('click', () => locate());
+$('reload-btn').addEventListener('click', () => location.reload());
 $('map-btn').addEventListener('click', openMap);
 $('address').addEventListener('input', () => {
   if (!state.point) setLoc($('address').value.trim() ? 'ok' : 'bad', 'Using the address you typed', '');
@@ -413,10 +470,15 @@ window.addEventListener('online', flushQueue);
 setInterval(flushQueue, 30000);
 
 $('contact').value = lsGet('last_contact', '') || '';
-// If permission was already granted on an earlier visit, start locating right away.
+// Already granted: locate now. Already blocked: show the fix-it steps before the user takes a photo.
 if (navigator.permissions && navigator.permissions.query) {
-  navigator.permissions.query({ name: 'geolocation' }).then((p) => { if (p.state === 'granted') locate(); }).catch(() => {});
+  navigator.permissions.query({ name: 'geolocation' }).then((p) => {
+    if (p.state === 'granted') locate();
+    else if (p.state === 'denied') locationFailed(1);
+    p.onchange = () => { if (p.state === 'granted' && !state.point) locate(); };
+  }).catch(() => {});
 }
+if (!window.isSecureContext) locationFailed(0);
 refresh();
 showPending();
 flushQueue();

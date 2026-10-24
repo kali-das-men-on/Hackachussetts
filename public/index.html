@@ -39,7 +39,12 @@
           <div id="loc-status">We use your location to tell the town where this is.</div>
           <div id="loc-detail" class="muted"></div>
         </div>
-        <button type="button" class="chip-btn" id="loc-btn">Locate me</button>
+        <button type="button" class="chip-btn" id="loc-btn">Use my location</button>
+      </div>
+      <div id="loc-help" class="help" hidden>
+        <b>Turn on location</b>
+        <ol id="loc-help-steps"></ol>
+        <button type="button" class="chip-btn" id="reload-btn">Reload page</button>
       </div>
       <div id="loc-manual" hidden>
         <input type="text" id="address" placeholder="Type an address or nearby landmark" autocomplete="street-address" maxlength="300">
