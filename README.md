@@ -431,3 +431,6 @@ sudo tailscale funnel --bg --https=10000 http://127.0.0.1:8610
 
 Public URL (works without Tailscale): https://raspberrypi-1.tail4620bc.ts.net:10000/ — QR code in `report-qr.png`.
 Staff dashboard: https://raspberrypi-1.tail4620bc.ts.net:10000/gov.html (see [Town staff dashboard](#town-staff-dashboard)).
+
+
+Demo Video: https://youtu.be/scLEd3L9-74?si=kURmsL3KfROJwWUT
